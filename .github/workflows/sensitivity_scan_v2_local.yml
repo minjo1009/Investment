@@ -1,4 +1,4 @@
-name: CompareToSingle_v2_LOCAL
+name: SensitivityScan_v2_LOCAL
 on:
   workflow_dispatch:
     inputs:
@@ -6,6 +6,16 @@ on:
         description: Glob to detect the CSV (default matches standard ETHUSDT 1min)
         required: true
         default: "**/*ETHUSDT*1min*2020*2025*.csv"
+        type: string
+      THR_LIST:
+        description: Comma-separated p_thr list (e.g. 0.78,0.80,0.83)
+        required: true
+        default: "0.80,0.83"
+        type: string
+      HOLD_LIST:
+        description: Comma-separated min_hold list (e.g. 6,8,10)
+        required: true
+        default: "6,8"
         type: string
       PY:
         description: Python version
@@ -39,7 +49,7 @@ env:
   UPLOAD_ARTIFACT_SHA: ea165f8d65b6e75b540449e92b4886f43607fa02
 
 jobs:
-  compare:
+  sensitivity:
     runs-on: ${{ inputs.OS }}
     steps:
       - name: Validate pinned SHAs (STRICT)
@@ -74,17 +84,12 @@ jobs:
           test -f "${CODE_ZIP}" || { echo "::error::Missing code zip ${CODE_ZIP}"; exit 1; }
           test -f "${DATA_ZIP}" || { echo "::error::Missing data zip ${DATA_ZIP}"; exit 1; }
           test -f "conf/params_champion.yml" || { echo "::error::Missing conf/params_champion.yml"; exit 1; }
-          if [ ! -f "conf/params_alt.yml" ]; then
-            echo "conf/params_alt.yml not found, creating a conservative alt from champion"
-            install -d conf
-            python -c 'import yaml; d=yaml.safe_load(open("conf/params_champion.yml")); d["entry"]["p_thr"]["trend"]=0.80; d["entry"]["p_thr"]["range"]=0.80; d["exit"]["min_hold"]=6; yaml.safe_dump(d, open("conf/params_alt.yml","w"))'
-          fi
 
       - name: Prepare
         shell: bash
         run: |
           set -euo pipefail
-          install -d out/A out/B
+          install -d out
           date +%Y%m%d-%H%M%S > RUN_ID_TAG.txt
           echo "RUN_ID_TAG=$(cat RUN_ID_TAG.txt)" >> "$GITHUB_ENV"
 
@@ -119,10 +124,8 @@ jobs:
           pip -V
           pip install --upgrade pip
           if [ -f requirements.txt ]; then
-            # non-fatal install of project reqs
             pip install -r requirements.txt || true
           fi
-          # prefer binary wheels for speed/compat, then fallback to older stack
           pip install --prefer-binary 'numpy<2.0' 'llvmlite==0.42.*' 'numba==0.59.*' 'pandas<2.3' 'scikit-learn<1.5' 'pyyaml'             || pip install 'numpy==1.24.4' 'llvmlite==0.40.*' 'numba==0.57.*' 'pandas==1.5.3' 'scikit-learn==1.2.2' 'pyyaml'
 
       - name: Unzip codepack
@@ -152,36 +155,32 @@ jobs:
           echo "PYTHONPATH=${CAND}:${PYTHONPATH:-}" >> "$GITHUB_ENV"
           echo "Using PYTHONPATH=${CAND}"
 
-      - name: Run A (champion)
+      - name: Sensitivity loop
         shell: bash
         run: |
           set -euo pipefail
-          python backtest/runner_patched.py --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" --params conf/params_champion.yml --outdir out/A
-          for f in summary.json gating_debug.json preds_test.csv trades.csv; do
-            [ -f "out/A/$f" ] || printf '{}' > "out/A/${f}"
+          thr_list="${{ inputs.THR_LIST }}"
+          hold_list="${{ inputs.HOLD_LIST }}"
+          IFS=',' read -r -a thrs <<< "$thr_list"
+          IFS=',' read -r -a holds <<< "$hold_list"
+          for thr in "${thrs[@]}"; do
+            for hold in "${holds[@]}"; do
+              tag="thr_${thr}_hold_${hold}"
+              odir="out/${tag}"
+              install -d "$odir"
+              par="${odir}/params.yml"
+              python -c 'import sys,yaml; d=yaml.safe_load(open("conf/params_champion.yml")); thr=float(sys.argv[1]); hold=int(sys.argv[2]); d["entry"]["p_thr"]["trend"]=thr; d["entry"]["p_thr"]["range"]=thr; d["exit"]["min_hold"]=hold; yaml.safe_dump(d, open(sys.argv[3],"w"))' "$thr" "$hold" "$par"
+              python backtest/runner_patched.py --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" --params "$par" --outdir "$odir"
+              for f in summary.json gating_debug.json preds_test.csv trades.csv; do
+                [ -f "$odir/$f" ] || printf '{}' > "$odir/${f}"
+              done
+            done
           done
-
-      - name: Run B (alt)
-        shell: bash
-        run: |
-          set -euo pipefail
-          python backtest/runner_patched.py --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" --params conf/params_alt.yml --outdir out/B
-          for f in summary.json gating_debug.json preds_test.csv trades.csv; do
-            [ -f "out/B/$f" ] || printf '{}' > "out/B/${f}"
-          done
-
-      - name: Compare summaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -c 'import json,os; a=json.load(open("out/A/summary.json")) if os.path.exists("out/A/summary.json") else {}; b=json.load(open("out/B/summary.json")) if os.path.exists("out/B/summary.json") else {}; json.dump({"A":a,"B":b}, open("out/compare_summary.json","w"), ensure_ascii=True, indent=2)'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: compare_local_${{ github.run_id }}_${{ env.RUN_ID_TAG }}
+          name: sensitivity_local_${{ github.run_id }}_${{ env.RUN_ID_TAG }}
           path: |
-            out/A
-            out/B
-            out/compare_summary.json
+            out
           if-no-files-found: warn
