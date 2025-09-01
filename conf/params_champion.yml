@@ -1,0 +1,9 @@
+entry:
+  p_thr: {trend: 0.83, range: 0.83}
+exit:
+  min_hold: 8
+meta:
+  start_capital: 1000
+  position_fraction: 1.0
+  fee_bps_per_side: 5
+  slippage_bps_per_side: 2
