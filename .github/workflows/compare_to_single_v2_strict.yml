@@ -80,7 +80,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          install -d dl out/A out/B scripts
+          install -d dl out/A out/B
           date +%Y%m%d-%H%M%S > RUN_ID_TAG.txt
           echo "RUN_ID_TAG=$(cat RUN_ID_TAG.txt)" >> "$GITHUB_ENV"
 
@@ -152,14 +152,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          f="scripts/compare_summaries.py"
-          printf '%s
-' 'import json,sys,os' > "$f"
-          printf '%s
-' 'def load(p):' '  try:' '    return json.load(open(p))' '  except Exception:' '    return {}' >> "$f"
-          printf '%s
-' 'a=load("out/A/summary.json")' 'b=load("out/B/summary.json")' 'cmp={"A":a,"B":b}' 'json.dump(cmp,open("out/compare_summary.json","w"),ensure_ascii=True,indent=2)' >> "$f"
-          python "$f"
+          python -c 'import json,os; a=json.load(open("out/A/summary.json")) if os.path.exists("out/A/summary.json") else {}; b=json.load(open("out/B/summary.json")) if os.path.exists("out/B/summary.json") else {}; json.dump({"A":a,"B":b}, open("out/compare_summary.json","w"), ensure_ascii=True, indent=2)'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

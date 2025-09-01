@@ -86,7 +86,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          install -d dl out scripts tmp
+          install -d dl out tmp
           date +%Y%m%d-%H%M%S > RUN_ID_TAG.txt
           echo "RUN_ID_TAG=$(cat RUN_ID_TAG.txt)" >> "$GITHUB_ENV"
 
@@ -150,20 +150,8 @@ jobs:
               tag="thr_${thr}_hold_${hold}"
               odir="out/${tag}"
               install -d "$odir"
-              # create params file from champion with overrides
               par="${odir}/params.yml"
-              python - <<'PY'
-import yaml,sys
-base="conf/params_champion.yml"
-thr=float(sys.argv[1])
-hold=int(sys.argv[2])
-d=yaml.safe_load(open(base))
-d["entry"]["p_thr"]["trend"]=thr
-d["entry"]["p_thr"]["range"]=thr
-d["exit"]["min_hold"]=hold
-yaml.safe_dump(d, open(sys.argv[3],"w"))
-PY
-              "$thr" "$hold" "$par"
+              python -c 'import sys,yaml; d=yaml.safe_load(open("conf/params_champion.yml")); thr=float(sys.argv[1]); hold=int(sys.argv[2]); d["entry"]["p_thr"]["trend"]=thr; d["entry"]["p_thr"]["range"]=thr; d["exit"]["min_hold"]=hold; yaml.safe_dump(d, open(sys.argv[3],"w"))' "$thr" "$hold" "$par"
               python backtest/runner_patched.py --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" --params "$par" --outdir "$odir"
               for f in summary.json gating_debug.json preds_test.csv trades.csv; do
                 [ -f "$odir/$f" ] || printf '{}' > "$odir/${f}"
