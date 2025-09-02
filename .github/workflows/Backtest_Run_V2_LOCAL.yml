@@ -13,12 +13,6 @@ on:
         required: true
         type: choice
         options: ["3.11","3.10"]
-      OS:
-        description: Runner OS
-        default: "ubuntu-latest"
-        required: true
-        type: choice
-        options: ["ubuntu-latest"]
       OUTDIR:
         description: Output directory under out/
         default: "A"
@@ -29,116 +23,88 @@ on:
         default: ""
         required: true
         type: string
-      PIN_STRICT:
-        description: Pin action SHAs
-        default: "true"
-        required: true
-        type: choice
-        options: ["true","false"]
 env:
   CODE_ZIP: strategy_v2_codepack_v2.1.3.zip
   DATA_ZIP: ETHUSDT_1min_2020_2025.zip
-  CHECKOUT_SHA: 08c6903cd8c0fde910a37f88322edcfb5dd907a8
-  SETUP_PYTHON_SHA: a26af69be951a213d495a4c3e4e4022e16d87065
-  UPLOAD_ARTIFACT_SHA: ea165f8d65b6e75b540449e92b4886f43607fa02
 
 jobs:
   run:
-    runs-on: ${{ inputs.OS }}
+    runs-on: ubuntu-latest
     steps:
-      - name: STRICT pin check
-        if: ${{ inputs.PIN_STRICT == 'true' }}
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          trap 'echo "::error::Pin check failed at line $LINENO"' ERR
-          for pair in "actions/checkout $CHECKOUT_SHA" "actions/setup-python $SETUP_PYTHON_SHA" "actions/upload-artifact $UPLOAD_ARTIFACT_SHA"; do
-            repo=$(echo "$pair" | cut -d' ' -f1); sha=$(echo "$pair" | cut -d' ' -f2)
-            echo "Checking $repo@$sha"
-            tmp=$(mktemp -d); git init -q "$tmp"; cd "$tmp"
-            git remote add origin "https://github.com/$repo.git"
-            git fetch --depth 1 origin "$sha"
-            git cat-file -t "$sha" | grep -q commit
-            cd - >/dev/null; rm -rf "$tmp"
-          done
-
-      - name: Checkout repo
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-
-      - name: Verify root files & list tree
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          trap 'echo "::error::Verify failed at line $LINENO"' ERR
-          echo "::group::Root tree (top 200)"; find . -maxdepth 3 -type f | sed -n '1,200p'; echo "::endgroup::"
-          test -f "$CODE_ZIP" || { echo "::error::Missing $CODE_ZIP"; exit 1; }
-          test -f "$DATA_ZIP" || { echo "::error::Missing $DATA_ZIP"; exit 1; }
-          test -f "conf/params_champion.yml" || { echo "::error::Missing conf/params_champion.yml"; exit 1; }
-          test -f "specs/strategy_v2_spec.yml" || { echo "::error::Missing specs/strategy_v2_spec.yml"; exit 1; }
-
-      - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: ${{ inputs.PY }}
 
-      - name: Install dependencies (wheel-first numba + sklearn)
+      - name: Verify required files
         shell: bash
         run: |
-          set -Eeuo pipefail
-          trap 'echo "::error::Pip install failed at line $LINENO"' ERR
-          python -V; pip -V
-          pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt || true; fi
-          pip install --prefer-binary 'numpy<2.0' 'llvmlite==0.42.*' 'numba==0.59.*' 'pandas<2.3' 'scikit-learn<1.5' 'pyyaml' || \
-          pip install 'numpy==1.24.4' 'llvmlite==0.40.*' 'numba==0.57.*' 'pandas==1.5.3' 'scikit-learn==1.2.2' 'pyyaml'
-          echo "::group::pip freeze (top)"; pip freeze | sed -n '1,120p'; echo "::endgroup::"
+          set -euo pipefail
+          for f in "$CODE_ZIP" "$DATA_ZIP" "conf/params_champion.yml" "specs/strategy_v2_spec.yml" "backtest/runner_patched_v2_iso.py"; do
+            if [ ! -f "$f" ]; then
+              echo "::error file=$f::Required file missing"; exit 1
+            fi
+          done
 
-      - name: Unzip data & detect CSV
-        id: csvdetect
+      - name: Install dependencies
         shell: bash
         run: |
-          set -Eeuo pipefail
-          trap 'echo "::error::CSV detect failed at line $LINENO"' ERR
+          set -euo pipefail
+          python -V
+          pip install --upgrade pip
+          pip install --prefer-binary "numpy<2.0" "llvmlite==0.42.*" "numba==0.59.*" "pandas<2.3" "scikit-learn<1.5" "pyyaml" || \
+          pip install "numpy==1.24.4" "llvmlite==0.40.*" "numba==0.57.*" "pandas==1.5.3" "scikit-learn==1.2.2" "pyyaml"
+
+      - name: Unzip data and codepack
+        shell: bash
+        run: |
+          set -euo pipefail
           rm -rf data _codepack
           unzip -q -o "$DATA_ZIP" -d data
           unzip -q -o "$CODE_ZIP" -d _codepack
-          shopt -s globstar nullglob
-          match=()
-          for f in data/**/${{ inputs.CSV_GLOB }}; do [ -f "$f" ] && match+=("$f"); done
-          if [ "$(echo ${{'${#match[@]}'}})" = "0" ]; then
-            echo "::error::No CSV matched: ${{ inputs.CSV_GLOB }}"; exit 1
-          fi
-          echo "CSV_PATH=$(echo ${{'${match[0]}'}})" >> "$GITHUB_ENV"
-          echo "Matched CSV: $(echo ${{'${match[0]}'}})"
 
-      - name: Set PYTHONPATH for strategy package discovery
+      - name: Set PYTHONPATH
         shell: bash
         run: |
-          set -Eeuo pipefail
-          trap 'echo "::error::PYTHONPATH step failed at line $LINENO"' ERR
-          CWD="$PWD"; CAND=""
-          [ -d "_codepack/strategy" ] && CAND="$CAND:$CWD/_codepack"
-          [ -d "_codepack/src/strategy" ] && CAND="$CAND:$CWD/_codepack/src"
-          [ -d "strategy" ] && CAND="$CAND:$CWD"
-          [ -d "src/strategy" ] && CAND="$CAND:$CWD/src"
-          CAND="${{ '$(echo ${CAND#:})' }}"
-          echo "PYTHONPATH=$CAND:$(python - <<'PY'\nimport os;print(os.environ.get('PYTHONPATH',''))\nPY\n)" >> "$GITHUB_ENV"
-          echo "Using PYTHONPATH=$CAND"
+          echo "PYTHONPATH=_codepack:_codepack/src:.:src" >> "$GITHUB_ENV"
+
+      - name: Import self-test
+        shell: bash
+        run: |
           python - <<'PY'
 import importlib
-for m in ["backtest.strategy_v2.conviction","backtest.strategy_v2.filters","backtest.strategy_v2.costs"]:
+mods=["backtest.strategy_v2.conviction","backtest.strategy_v2.filters","backtest.strategy_v2.costs"]
+for m in mods:
     try:
-        importlib.import_module(m); print(f"[OK] import {{m}}")
+        importlib.import_module(m); print("[OK]", m)
     except Exception as e:
-        print(f"[FAIL] import {{m}}: {{e}}"); raise
+        print("[FAIL]", m, "=>", e); raise
 PY
 
-      - name: Run backtest (with optional calibrator)
+      - name: Detect CSV by glob
+        id: detect
         shell: bash
         run: |
-          set -Eeuo pipefail
-          trap 'echo "::error::Runner failed at line $LINENO"' ERR
-          CAL=""; [ -n "${{ inputs.CALIBRATOR }}" ] && [ -f "${{ inputs.CALIBRATOR }}" ] && CAL="--calibrator ${{ inputs.CALIBRATOR }}"
+          set -euo pipefail
+          python - <<'PY'
+import glob, sys, os
+pat = os.environ.get("INPUT_CSV_GLOB") or "**/*.csv"
+matches = glob.glob(os.path.join("data", pat), recursive=True)
+print("Found:", len(matches))
+if not matches:
+    print("::error::No CSV matched:", pat); sys.exit(1)
+print("::notice::Using CSV:", matches[0])
+open(os.environ["GITHUB_ENV"],"a").write(f"CSV_PATH={matches[0]}\\n")
+PY
+
+      - name: Run backtest
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAL=""
+          if [ -n "${{ inputs.CALIBRATOR }}" ] && [ -f "${{ inputs.CALIBRATOR }}" ]; then
+            CAL="--calibrator ${{ inputs.CALIBRATOR }}"
+          fi
           install -d "out/${{ inputs.OUTDIR }}"
           python backtest/runner_patched_v2_iso.py --mode run \
             --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" \
@@ -147,17 +113,15 @@ PY
       - name: Inspect outputs
         shell: bash
         run: |
-          set -Eeuo pipefail
-          trap 'echo "::error::Inspect failed at line $LINENO"' ERR
-          ls -la "out/${{ inputs.OUTDIR }}"
+          set -euo pipefail
+          test -f "out/${{ inputs.OUTDIR }}/summary.json" || {{ echo "::error::summary.json missing"; exit 1; }}
           python - <<'PY'
-import json,sys,os
-p=f"out/{{os.environ.get('GITHUB_INPUT_OUTDIR','A')}}/summary.json"
-d=json.load(open(p)); print("[SUMMARY]", d)
+import json, os
+p=f"out/{os.environ.get('INPUT_OUTDIR','A')}/summary.json"
+print("[SUMMARY]", json.load(open(p)))
 PY
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: backtest_local_${{ github.run_id }}
           path: |
