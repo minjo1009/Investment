@@ -19,10 +19,11 @@ on:
         required: true
         type: string
       CALIBRATOR:
-        description: Optional calibrator JSON path (e.g. conf/calibrator_isotonic.json)
+        description: Optional calibrator JSON path
         default: ""
         required: true
         type: string
+
 env:
   CODE_ZIP: strategy_v2_codepack_v2.1.3.zip
   DATA_ZIP: ETHUSDT_1min_2020_2025.zip
@@ -42,7 +43,7 @@ jobs:
           set -euo pipefail
           for f in "$CODE_ZIP" "$DATA_ZIP" "conf/params_champion.yml" "specs/strategy_v2_spec.yml" "backtest/runner_patched_v2_iso.py"; do
             if [ ! -f "$f" ]; then
-              echo "::error file=$f::Required file missing"; exit 1
+              echo "::error::Required file missing: $f"; exit 1
             fi
           done
 
@@ -50,7 +51,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -V
+          python -V; pip -V
           pip install --upgrade pip
           pip install --prefer-binary "numpy<2.0" "llvmlite==0.42.*" "numba==0.59.*" "pandas<2.3" "scikit-learn<1.5" "pyyaml" || \
           pip install "numpy==1.24.4" "llvmlite==0.40.*" "numba==0.57.*" "pandas==1.5.3" "scikit-learn==1.2.2" "pyyaml"
@@ -62,49 +63,25 @@ jobs:
           rm -rf data _codepack
           unzip -q -o "$DATA_ZIP" -d data
           unzip -q -o "$CODE_ZIP" -d _codepack
-
-      - name: Set PYTHONPATH
-        shell: bash
-        run: |
           echo "PYTHONPATH=_codepack:_codepack/src:.:src" >> "$GITHUB_ENV"
 
       - name: Import self-test
         shell: bash
         run: |
-          python - <<'PY'
-import importlib
-mods=["backtest.strategy_v2.conviction","backtest.strategy_v2.filters","backtest.strategy_v2.costs"]
-for m in mods:
-    try:
-        importlib.import_module(m); print("[OK]", m)
-    except Exception as e:
-        print("[FAIL]", m, "=>", e); raise
-PY
+          set -euo pipefail
+          python -c "import importlib,sys;mods=['backtest.strategy_v2.conviction','backtest.strategy_v2.filters','backtest.strategy_v2.costs'];ok=True\nfor m in mods:\n  try:\n    importlib.import_module(m);print('[OK]',m)\n  except Exception as e:\n    print('[FAIL]',m,':',e);ok=False\nimport sys; sys.exit(0 if ok else 1)"
 
       - name: Detect CSV by glob
-        id: detect
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-import glob, sys, os
-pat = os.environ.get("INPUT_CSV_GLOB") or "**/*.csv"
-matches = glob.glob(os.path.join("data", pat), recursive=True)
-print("Found:", len(matches))
-if not matches:
-    print("::error::No CSV matched:", pat); sys.exit(1)
-print("::notice::Using CSV:", matches[0])
-open(os.environ["GITHUB_ENV"],"a").write(f"CSV_PATH={matches[0]}\\n")
-PY
+          python -c "import glob,os,sys;pat=os.environ.get('INPUT_CSV_GLOB') or '**/*.csv';m=glob.glob(os.path.join('data',pat),recursive=True);print('Found',len(m));\nimport sys\n(sys.exit(1) if not m else print('Using',m[0]));open(os.environ['GITHUB_ENV'],'a').write('CSV_PATH='+m[0]+'\\n')"
 
       - name: Run backtest
         shell: bash
         run: |
           set -euo pipefail
-          CAL=""
-          if [ -n "${{ inputs.CALIBRATOR }}" ] && [ -f "${{ inputs.CALIBRATOR }}" ]; then
-            CAL="--calibrator ${{ inputs.CALIBRATOR }}"
-          fi
+          CAL=""; if [ -n "${{ inputs.CALIBRATOR }}" ] && [ -f "${{ inputs.CALIBRATOR }}" ]; then CAL="--calibrator ${{ inputs.CALIBRATOR }}"; fi
           install -d "out/${{ inputs.OUTDIR }}"
           python backtest/runner_patched_v2_iso.py --mode run \
             --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" \
@@ -114,16 +91,11 @@ PY
         shell: bash
         run: |
           set -euo pipefail
-          test -f "out/${{ inputs.OUTDIR }}/summary.json" || {{ echo "::error::summary.json missing"; exit 1; }}
-          python - <<'PY'
-import json, os
-p=f"out/{os.environ.get('INPUT_OUTDIR','A')}/summary.json"
-print("[SUMMARY]", json.load(open(p)))
-PY
+          test -f "out/${{ inputs.OUTDIR }}/summary.json" || (echo "::error::summary.json missing" && exit 1)
+          python -c "import os,json; p='out/'+(os.environ.get('INPUT_OUTDIR','A'))+'/summary.json';print('[SUMMARY]',json.load(open(p)))"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: backtest_local_${{ github.run_id }}
-          path: |
-            out/${{ inputs.OUTDIR }}
+          path: out/${{ inputs.OUTDIR }}
           if-no-files-found: error

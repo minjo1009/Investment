@@ -62,12 +62,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-import yaml
-d=yaml.safe_load(open("conf/params_champion.yml"))
-d.setdefault("exit",{})["min_hold"]=6
-yaml.safe_dump(d, open("conf/params_alt.yml","w"))
-PY
+          python -c "import yaml; d=yaml.safe_load(open('conf/params_champion.yml')); d.setdefault('exit',{{}})['min_hold']=6; yaml.safe_dump(d, open('conf/params_alt.yml','w'))"
 
       - name: Run B (alt)
         shell: bash
@@ -81,12 +76,8 @@ PY
       - name: Compare summaries
         shell: bash
         run: |
-          python - <<'PY'
-import json
-a=json.load(open("out/A/summary.json")); b=json.load(open("out/B/summary.json"))
-print(json.dumps({"A":a,"B":b}, indent=2))
-open("out/compare_summary.json","w").write(json.dumps({"A":a,"B":b}, indent=2))
-PY
+          set -euo pipefail
+          python -c "import json; a=json.load(open('out/A/summary.json')); b=json.load(open('out/B/summary.json')); import sys; print(json.dumps({{'A':a,'B':b}}, indent=2)); open('out/compare_summary.json','w').write(json.dumps({{'A':a,'B':b}}, indent=2))"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

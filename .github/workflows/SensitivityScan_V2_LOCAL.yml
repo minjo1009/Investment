@@ -65,18 +65,8 @@ jobs:
               tag="thr_${{thr}}_hold_${{hold}}"
               odir="out/${{tag}}"; install -d "$odir"
               par="${{odir}}/params.yml"
-              python - <<'PY' "$thr" "$hold" "$par"
-import sys, yaml
-thr=float(sys.argv[1]); hold=int(sys.argv[2]); par=sys.argv[3]
-d=yaml.safe_load(open("conf/params_champion.yml"))
-d.setdefault("entry",{}).setdefault("p_thr",{})
-d["entry"]["p_thr"]["trend"]=thr; d["entry"]["p_thr"]["range"]=thr
-d.setdefault("exit",{})["min_hold"]=hold
-yaml.safe_dump(d, open(par,"w"))
-PY
-              python backtest/runner_patched_v2_iso.py --mode run \
-                --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" \
-                --params "$par" --outdir "$odir"
+              THR="$thr" HOLD="$hold" PAR="$par" python -c "import os,yaml; thr=float(os.environ['THR']); hold=int(os.environ['HOLD']); d=yaml.safe_load(open('conf/params_champion.yml')); d.setdefault('entry',{{}}).setdefault('p_thr',{{}}); d['entry']['p_thr']['trend']=thr; d['entry']['p_thr']['range']=thr; d.setdefault('exit',{{}})['min_hold']=hold; yaml.safe_dump(d, open(os.environ['PAR'],'w'))"
+              python backtest/runner_patched_v2_iso.py --mode run --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" --params "$par" --outdir "$odir"
             done
           done
 
