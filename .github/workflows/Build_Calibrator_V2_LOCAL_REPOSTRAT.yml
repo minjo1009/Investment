@@ -1,10 +1,4 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
-diff --git a/.github/workflows/Build_Calibrator_V2_LOCAL_REPOSTRAT.yml b/.github/workflows/Build_Calibrator_V2_LOCAL_REPOSTRAT.yml
-index 9c5a50c573d8c3609ad60a6c1cc7bf7f1b586228..18b40ac3d9408915fb19ed648ac0baa24889e1c7 100644
---- a/.github/workflows/Build_Calibrator_V2_LOCAL_REPOSTRAT.yml
-+++ b/.github/workflows/Build_Calibrator_V2_LOCAL_REPOSTRAT.yml
-@@ -1,80 +1,79 @@
- name: Build_Calibrator_V2_LOCAL_REPOSTRAT
+
  on:
    workflow_dispatch:
      inputs:
