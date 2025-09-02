@@ -1,0 +1,107 @@
+name: Build_Calibrator_V2_LOCAL
+on:
+  workflow_dispatch:
+    inputs:
+      CSV_GLOB:
+        description: Data CSV glob under data/
+        default: "**/*ETHUSDT*1min*2020*2025*.csv"
+        required: true
+        type: string
+      HORIZON:
+        description: Label horizon (bars)
+        default: "30"
+        required: true
+        type: string
+      TP_BPS:
+        description: TP in basis points
+        default: "38"
+        required: true
+        type: string
+      SL_BPS:
+        description: SL in basis points
+        default: "22"
+        required: true
+        type: string
+      USE_PREDS_FROM:
+        description: Optional outdir to read preds_test.csv (e.g. out/A)
+        default: ""
+        required: false
+        type: string
+      PY:
+        description: Python version
+        default: "3.11"
+        required: true
+        type: choice
+        options: ["3.11","3.10"]
+
+env:
+  CODE_ZIP: strategy_v2_codepack_v2.1.3.zip
+  DATA_ZIP: ETHUSDT_1min_2020_2025.zip
+  CALIB_JSON: conf/calibrator_isotonic.json
+  CALIB_PY_CAND1: conf/isotonic_calibrator_v2.py
+  CALIB_PY_CAND2: tools/isotonic_calibrator_v2.py
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ inputs.PY }}
+
+      - name: Install deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install --upgrade pip
+          pip install --prefer-binary "numpy<2.0" "llvmlite==0.42.*" "numba==0.59.*" "pandas<2.3" "scikit-learn<1.5" "pyyaml" || \
+          pip install "numpy==1.24.4" "llvmlite==0.40.*" "numba==0.57.*" "pandas==1.5.3" "scikit-learn==1.2.2" "pyyaml"
+
+      - name: Unzip data/codepack
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q -o "$DATA_ZIP" -d data
+          unzip -q -o "$CODE_ZIP" -d _codepack
+
+      - name: Locate calibrator script
+        id: loc
+        shell: bash
+        run: |
+          set -euo pipefail
+          if   [ -f "$CALIB_PY_CAND1" ]; then echo "CALIB_PY=$CALIB_PY_CAND1" >> "$GITHUB_ENV"; echo "Using $CALIB_PY_CAND1"
+          elif [ -f "$CALIB_PY_CAND2" ]; then echo "CALIB_PY=$CALIB_PY_CAND2" >> "$GITHUB_ENV"; echo "Using $CALIB_PY_CAND2"
+          else echo "::error::isotonic_calibrator_v2.py not found in conf/ or tools/"; exit 1; fi
+
+      - name: Make samples (if needed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.USE_PREDS_FROM }}" ]; then
+            echo "Using existing preds from ${{ inputs.USE_PREDS_FROM }}"
+          else
+            echo "No preds provided; building samples directly from CSVs"
+            python "$CALIB_PY" make-samples --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" \
+              --horizon ${{ inputs.HORIZON }} --tp-bps ${{ inputs.TP_BPS }} --sl-bps ${{ inputs.SL_BPS }} \
+              --out out/calib_samples.csv
+          fi
+
+      - name: Fit calibrator JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.USE_PREDS_FROM }}" ]; then
+            python "$CALIB_PY" fit --from-outdir "${{ inputs.USE_PREDS_FROM }}" --out "$CALIB_JSON"
+          else
+            python "$CALIB_PY" fit --samples out/calib_samples.csv --out "$CALIB_JSON"
+          fi
+          test -f "$CALIB_JSON" || (echo "::error::calibrator JSON missing" && exit 1)
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: calibrator_v2_local_${{ github.run_id }}
+          path: |
+            ${{ env.CALIB_JSON }}
+            out/calib_samples.csv
+          if-no-files-found: ignore
