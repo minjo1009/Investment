@@ -80,7 +80,48 @@ def true_range(h, l, pc):
 
 
 def tag_session(ts_utc) -> str:
-  h = ts_utc.hour
+  """Return trading session name for a UTC timestamp.
+
+  The input ``ts_utc`` may be extremely permissive: a scalar timestamp,
+  sequence/array/Series of timestamps, string, integer epoch (in seconds or
+  milliseconds) or even ``pandas.Timestamp`` without timezone information.
+  Whatever the input, this helper makes a best effort to coerce it into a
+  timezone-aware ``pandas.Timestamp``.  If coercion fails we fall back to the
+  default session ``"US"`` instead of raising an exception.
+  """
+
+  try:
+    import pandas as _pd
+    import numpy as _np
+
+    x = ts_utc
+    # If an array/Series/list is passed, grab the first element
+    if isinstance(x, (list, tuple, set, _np.ndarray)):
+      x = next(iter(x), _pd.NaT)
+    elif isinstance(x, _pd.Series):
+      x = x.iloc[0] if not x.empty else _pd.NaT
+
+    # Handle numeric epochs (seconds or milliseconds)
+    if isinstance(x, (int, float)) and not isinstance(x, bool):
+      v = int(x)
+      digits = len(str(abs(v))) if v != 0 else 1
+      if digits >= 13:
+        ts = _pd.to_datetime(v, unit="ms", utc=True, errors="coerce")
+      elif digits >= 10:
+        ts = _pd.to_datetime(v, unit="s", utc=True, errors="coerce")
+      else:
+        ts = _pd.to_datetime(v, utc=True, errors="coerce")
+    else:
+      # to_datetime will localise to UTC when ``utc=True``; for naive
+      # timestamps this effectively assumes they are UTC.
+      ts = _pd.to_datetime(x, utc=True, errors="coerce")
+
+    if ts is _pd.NaT or _pd.isna(ts):
+      return "US"
+    h = int(ts.hour)
+  except Exception:
+    return "US"
+
   if 0 <= h < 8:
     return "ASIA"
   if 8 <= h < 16:
@@ -207,7 +248,12 @@ def main():
   sl_bps_cur = 0.0
 
   for i in range(max(atr_n, gate.m)+1, len(df)):
+    # ``pd.to_datetime`` may return a ``Series`` if fed a sequence-like input.
+    # Ensure ``now_ts`` is always a scalar ``Timestamp`` to keep downstream
+    # logic simple.
     now_ts = pd.to_datetime(df['open_time'].iloc[i], utc=True)
+    if isinstance(now_ts, pd.Series):
+      now_ts = now_ts.iloc[0]
     session = tag_session(now_ts)
     reg = regime[i]
     side = int(np.sign(dir_hint[i]))
