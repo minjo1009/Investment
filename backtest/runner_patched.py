@@ -6,6 +6,94 @@ import os, sys, json, argparse, csv, math
 from pathlib import Path
 import yaml, pandas as pd, numpy as np
 from backtest.strategy_v2 import (passes_conviction, ConvictionParams, ConvictionState,
+
+# --- PATCH: timestamp auto-normalization (injected) ---------------------------
+# Ensures any CSV loaded via pandas.read_csv includes a UTC `timestamp` column.
+# Handles: open_time (ms/s), datetime (ISO), ts/t (epoch), date+time combos.
+try:
+    import pandas as _pd
+    import numpy as _np
+    from pandas.api.types import is_numeric_dtype as _isnum
+
+    _orig_read_csv = _pd.read_csv
+
+    def _to_utc(series):
+        s = series
+        # numeric epoch -> infer unit by magnitude
+        if _isnum(s):
+            x = s.dropna().astype("int64")
+            if len(x) > 0:
+                v = int(x.iloc[0])
+                digits = len(str(abs(v))) if v != 0 else 1
+                if digits >= 13:
+                    return _pd.to_datetime(s, unit="ms", utc=True, errors="coerce")
+                elif digits >= 10:
+                    return _pd.to_datetime(s, unit="s", utc=True, errors="coerce")
+        # fallback to generic parser
+        out = _pd.to_datetime(s, utc=True, errors="coerce")
+        if out.notna().any():
+            return out
+        # common explicit formats
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S",
+                    "%Y-%m-%dT%H:%M:%S", "%d-%m-%Y %H:%M:%S"):
+            try:
+                return _pd.to_datetime(s, format=fmt, utc=True, errors="coerce")
+            except Exception:
+                pass
+        return out
+
+    def _ensure_timestamp(df):
+        if "timestamp" in df.columns and df["timestamp"].notna().any():
+            return df
+        cands = [c for c in df.columns if str(c).lower() in (
+            "timestamp", "datetime", "open_time", "time_open",
+            "candle_begin_time", "ts", "t", "date", "time"
+        )]
+        # priority order
+        order = ["timestamp","datetime","open_time","time_open",
+                 "candle_begin_time","ts","t","date","time"]
+        cands.sort(key=lambda c: order.index(str(c).lower()) if str(c).lower() in order else 999)
+        ts = None
+        for c in cands:
+            name = str(c).lower()
+            if name in ("date","time"):
+                # will consider in combos later
+                continue
+            ts = _to_utc(df[c])
+            if ts.notna().any():
+                df["timestamp"] = ts
+                break
+        if "timestamp" not in df.columns or df["timestamp"].isna().all():
+            # try date+time combo
+            if "date" in df.columns and "time" in df.columns:
+                combo = df["date"].astype(str) + " " + df["time"].astype(str)
+                ts = _to_utc(combo)
+                if ts.notna().any():
+                    df["timestamp"] = ts
+        # final cleanup if present
+        if "timestamp" in df.columns:
+            df.sort_values("timestamp", inplace=True, ignore_index=True)
+            df.drop_duplicates(subset=["timestamp"], keep="last", inplace=True)
+        return df
+
+    def _patched_read_csv(*args, **kwargs):
+        df = _orig_read_csv(*args, **kwargs)
+        try:
+            df = _ensure_timestamp(df)
+        except Exception as _e:
+            # non-fatal; allow original behavior (runner may handle its own errors)
+            pass
+        return df
+
+    # apply once
+    if getattr(_pd.read_csv, "__name__", "") != "_patched_read_csv":
+        _pd.read_csv = _patched_read_csv
+except Exception as _patch_exc:
+    # If pandas isn't imported/available yet, the patch will be a no-op.
+    # The runner may import pandas later; in that case this patch won't apply.
+    # (We avoid raising to keep backward compatibility.)
+    pass
+# --- END PATCH ----------------------------------------------------------------
                                   RollingBalance, RollingBalanceParams, approx_ofi, Frictions)
 
 def load_yaml(p):
