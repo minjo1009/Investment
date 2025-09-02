@@ -26,28 +26,37 @@ components:
       slow: 26
       denoise: true
     signal: 9      # <-- required key at components.signal.signal
+    smoothing: { ema_span: 0 }
+    weights: { macd: 0.6, ofi: 0.4 }
   regime:
     atr: { n: 14, z_trend_min: 0.5 }
   structure:
     rolling_balance_avoid: { win_min: 60, tr_pctl_max: 25 }
   orderflow:
-    ofi_align: { lookback: 5 }
+    ofi_align: { lookback: 12, z_min: 0.30 }
   gating:
     calibration:
       method: isotonic
       target_pop: 0.72
-      p_thr: { trend: 0.86, range: 0.90 }
+      p_thr: { trend: 0.82, range: 0.86 }
     conviction:
       persistence: { m: 5, k: 3 }
-      ev_gate: { alpha_cost: 2.0 }
+      ev_gate:
+        mode: probability
+        ev_margin_bps: 6
+        delta_p_min: 0.02
       hysteresis: { thr_entry: 0.88, thr_exit: 0.82 }
       reentry_reset: { swing_lookback: 10, require_break_of_extreme: true }
   exits:
+    mode: dynamic_atr
+    atr:
+      n: 14
+      tp_mult: { trend: 2.5, range: 1.2 }
+      sl_mult: { trend: 1.0, range: 1.0 }
+      cap_bps: { tp_min: 20, tp_max: 180, sl_min: 10, sl_max: 90 }
     min_hold: 8
     max_hold: 60
     breakeven_bps: 7
-    tp_bps: 38
-    sl_bps: 22
   sizing:
     position_fraction: 1.0
     leverage_max: 3

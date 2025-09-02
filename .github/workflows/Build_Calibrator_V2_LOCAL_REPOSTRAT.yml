@@ -7,12 +7,6 @@ on:
         default: ""
         required: false
         type: string
-      PY:
-        description: Python version
-        default: "3.11"
-        required: true
-        type: choice
-        options: ["3.11","3.10"]
 env:
   DATA_ZIP: ETHUSDT_1min_2020_2025.zip
   CALIB_JSON: conf/calibrator_isotonic.json
@@ -23,9 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ inputs.PY }}
+          python-version: '3.11'
 
       - name: Prepare data and pick CSV (when building from CSV)
         if: ${{ inputs.USE_PREDS_FROM == '' }}
@@ -57,19 +51,24 @@ jobs:
         run: |
           set -e
           python -m pip install --upgrade pip
-          python -m pip install --prefer-binary 'numpy<2.0' 'pandas<2.3' 'scikit-learn<1.5' 'pyyaml'
+          python -m pip install --prefer-binary -r requirements.txt
 
-      - name: Build calibrator JSON
+      - name: Build calibrator JSON or bins
         shell: bash
         run: |
           set -e
-          if [ -n "${{ inputs.USE_PREDS_FROM }}" ]; then
-            python "$CALIB_PY" fit --from-outdir "${{ inputs.USE_PREDS_FROM }}" --out "$CALIB_JSON"
+          if python -c "import sklearn" 2>/dev/null; then
+            if [ -n "${{ inputs.USE_PREDS_FROM }}" ]; then
+              python "$CALIB_PY" fit --from-outdir "${{ inputs.USE_PREDS_FROM }}" --out "$CALIB_JSON"
+            else
+              python "$CALIB_PY" make-samples --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --horizon 30 --tp-bps 38 --sl-bps 22 --out out/calib_samples.csv
+              python "$CALIB_PY" fit --samples out/calib_samples.csv --out "$CALIB_JSON"
+            fi
+            [ -f "$CALIB_JSON" ] || { echo "::error::calibrator JSON missing"; exit 1; }
           else
-            python "$CALIB_PY" make-samples --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --horizon 30 --tp-bps 38 --sl-bps 22 --out out/calib_samples.csv
-            python "$CALIB_PY" fit --samples out/calib_samples.csv --out "$CALIB_JSON"
+            src="${{ inputs.USE_PREDS_FROM }}"; [ -z "$src" ] && src="out"
+            python tools/fit_calibrator_bins.py --preds "$src/preds_test.csv" --out conf/calibrator_bins.json
           fi
-          [ -f "$CALIB_JSON" ] || { echo "::error::calibrator JSON missing"; exit 1; }
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
