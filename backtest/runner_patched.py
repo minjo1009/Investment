@@ -201,6 +201,7 @@ def main():
     be_bps = params['exit'].get('breakeven_bps', 7)
 
     position, entry_px, entry_idx = 0, 0.0, -1
+    be_armed = False
     trades, gating_dbg = [], []
 
     def calc_ev(pop): return pop*tp_bps - (1.0-pop)*sl_bps - frictions_bps
@@ -228,13 +229,18 @@ def main():
             if decision:
                 position = side; state.last_side = side
                 entry_px = float(df['close'].iloc[i]); entry_idx = i
+                be_armed = False
                 dbg["decision"] = "enter"
             else:
                 dbg["decision"] = "reject"
         else:
             held = i - entry_idx
             pnl_bps = (float(df['close'].iloc[i]) / entry_px - 1.0) * (10000.0) * position
-            hit_tp = pnl_bps >= tp_bps; hit_sl = pnl_bps <= -sl_bps; time_exit = held >= max_hold
+            if not be_armed and pnl_bps >= be_bps:
+                be_armed = True
+            hit_tp = pnl_bps >= tp_bps
+            hit_sl = pnl_bps <= (0 if be_armed else -sl_bps)
+            time_exit = held >= max_hold
             if hit_tp or hit_sl or time_exit or (held < min_hold and hit_sl):
                 trades.append({"entry_idx":entry_idx,"exit_idx":i,"side":position,
                                "entry_px":entry_px,"exit_px":float(df['close'].iloc[i]),"pnl_bps":pnl_bps})
@@ -242,6 +248,7 @@ def main():
                 dbg["decision"] = "exit"
             else:
                 dbg["decision"] = "hold"
+            dbg["be_armed"] = bool(be_armed)
         gating_dbg.append(dbg)
 
     # Metrics
