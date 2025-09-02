@@ -1,0 +1,9 @@
+--- a/backtest/runner_patched.py
++++ b/backtest/runner_patched.py
+@@
+-from strategy import gating  # example
++from backtest.strategy_v2 import (passes_conviction, ConvictionParams, ConvictionState,
++                                  RollingBalance, RollingBalanceParams, approx_ofi, Frictions)
++# 1) Load specs/specs/strategy_v2_spec.yml to populate params.
++# 2) Compute rolling balance and OFI features.
++# 3) Before entry, compute EV (use Frictions.per_roundtrip) and call passes_conviction(...).
