@@ -1,0 +1,12 @@
+grid:
+  p_thr_trend: [0.78, 0.80, 0.82]
+  p_thr_range: [0.82, 0.84, 0.86]
+  alpha_cost: [0.8, 1.0]
+  be_arm_after_bars: [4, 6, 8]
+  min_hold: [6, 8, 10]
+  tp_trend_bps: [34, 38, 44]
+  sl_trend_bps: [18, 22, 26]
+  tp_range_bps: [26, 30, 34]
+  sl_range_bps: [16, 20, 24]
+session_split: [ASIA, EU, US]
+metrics: ["winrate", "mcc", "cum_pnl_bps"]

@@ -1,38 +1,47 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "OHLCV Minute Data Contract v2",
-  "type": "object",
-  "properties": {
-    "timestamp": {
-      "type": "string",
-      "format": "date-time"
-    },
-    "open": {
-      "type": "number"
-    },
-    "high": {
-      "type": "number"
-    },
-    "low": {
-      "type": "number"
-    },
-    "close": {
-      "type": "number"
-    },
-    "volume": {
-      "type": "number"
-    },
-    "symbol": {
-      "type": "string"
-    }
-  },
-  "required": [
-    "timestamp",
+  "required_columns": [
+    "open_time",
     "open",
     "high",
     "low",
     "close",
     "volume"
   ],
-  "additionalProperties": true
+  "optional_columns": [
+    "vwap",
+    "trades",
+    "funding_rate",
+    "bid",
+    "ask"
+  ],
+  "session_fields": {
+    "tz_base": "UTC",
+    "tz_alt": "Asia/Seoul",
+    "session_tag": [
+      "ASIA",
+      "EU",
+      "US"
+    ]
+  },
+  "cost_fields": {
+    "fee_bps_per_side": {
+      "default": 5,
+      "min": 4,
+      "conservative": true
+    },
+    "slip_bps_per_side": {
+      "default": 2,
+      "min": 2,
+      "conservative": true
+    },
+    "funding_bps_rt": {
+      "default": 0.5,
+      "apply_roll_windows": [
+        "00:00",
+        "08:00",
+        "16:00",
+        "24:00"
+      ]
+    }
+  }
 }
