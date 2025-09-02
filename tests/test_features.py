@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 
 from backtest.strategy_v2.filters import compute_bvr_ofi, ofi_conf_alignment
+from backtest.strategy_v2.structure import prior_day_levels
 
 
 @pytest.fixture
@@ -25,3 +26,12 @@ def test_ofi_features(df_eth_1m):
   assert set(['BVR','OFI']).issubset(feats.columns)
   aligned = ofi_conf_alignment(df_eth_1m)
   assert 'OFI_conf' in aligned.columns
+
+
+def test_prior_day_levels_handles_duplicates(df_eth_1m):
+  df = df_eth_1m.copy()
+  df.insert(0, 'open_time', df['open_time'], allow_duplicates=True)
+  assert df.columns.duplicated().any()
+  out = prior_day_levels(df)
+  assert set(['PDH','PDL','PDc']).issubset(out.columns)
+  assert len(out) == len(df)

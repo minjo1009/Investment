@@ -2,7 +2,10 @@ import numpy as np
 import pandas as pd
 
 def prior_day_levels(df: pd.DataFrame) -> pd.DataFrame:
-  d = df.copy()
+  # Guard against duplicate column names (e.g. multiple 'open_time' columns)
+  # which can cause ``pd.to_datetime`` to raise a ValueError when a column
+  # selection returns a DataFrame instead of a Series.
+  d = df.loc[:, ~df.columns.duplicated()].copy()
   d["date"] = pd.to_datetime(d["open_time"]).dt.floor("D")
   by = d.groupby("date")
   out = d[["open_time"]].copy()
