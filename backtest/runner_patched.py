@@ -248,7 +248,7 @@ def main():
                 dbg["decision"] = "exit"
             else:
                 dbg["decision"] = "hold"
-            dbg["be_armed"] = bool(be_armed)
+        dbg["be_armed"] = bool(be_armed)
         gating_dbg.append(dbg)
 
     # Metrics
