@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       CSV_GLOB:
-        description: Data CSV glob under data/ (leave default; auto-fallback to **/*.csv)
+        description: Data CSV glob under data/ (auto-fallback to **/*.csv)
         default: "**/*ETHUSDT*1min*2020*2025*.csv"
         required: true
         type: string
@@ -56,9 +56,9 @@ jobs:
         shell: bash
         run: |
           set -e
-          python -V; pip -V
-          pip install --upgrade pip
-          pip install --prefer-binary numpy<2.0 llvmlite==0.42.* numba==0.59.* pandas<2.3 scikit-learn<1.5 pyyaml
+          python -V; python -m pip -V
+          python -m pip install --upgrade pip
+          python -m pip install --prefer-binary 'numpy<2.0' 'llvmlite==0.42.*' 'numba==0.59.*' 'pandas<2.3' 'scikit-learn<1.5' 'pyyaml'
       - name: Run backtest
         shell: bash
         run: |

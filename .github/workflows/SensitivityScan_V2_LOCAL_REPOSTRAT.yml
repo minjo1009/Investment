@@ -54,8 +54,8 @@ jobs:
         shell: bash
         run: |
           set -e
-          pip install --upgrade pip
-          pip install --prefer-binary numpy<2.0 llvmlite==0.42.* numba==0.59.* pandas<2.3 scikit-learn<1.5 pyyaml
+          python -m pip install --upgrade pip
+          python -m pip install --prefer-binary 'numpy<2.0' 'llvmlite==0.42.*' 'numba==0.59.*' 'pandas<2.3' 'scikit-learn<1.5' 'pyyaml'
       - name: Sensitivity loop
         shell: bash
         run: |
