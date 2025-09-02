@@ -1,0 +1,78 @@
+name: Backtest_Run_V2_LOCAL_REPOSTRAT
+on:
+  workflow_dispatch:
+    inputs:
+      CSV_GLOB:
+        description: Data CSV glob under data/
+        default: "**/*ETHUSDT*1min*2020*2025*.csv"
+        required: true
+        type: string
+      PY:
+        description: Python version
+        default: "3.11"
+        required: true
+        type: choice
+        options: ["3.11","3.10"]
+      OUTDIR:
+        description: Output directory under out/
+        default: "A"
+        required: true
+        type: string
+env:
+  DATA_ZIP: ETHUSDT_1min_2020_2025.zip
+  CALIB_JSON: conf/calibrator_isotonic.json
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ inputs.PY }}
+      - name: Verify repo strategy + runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in "backtest/runner_patched_v2_iso.py" "conf/params_champion.yml"; do
+            [ -f "$f" ] || (echo "::error::Required file missing: $f" && exit 1)
+          done
+          echo "::group::tree"; find backtest -maxdepth 3 -type f | sed -n '1,120p'; echo "::endgroup::"
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -V; pip -V
+          pip install --upgrade pip
+          pip install --prefer-binary "numpy<2.0" "llvmlite==0.42.*" "numba==0.59.*" "pandas<2.3" "scikit-learn<1.5" "pyyaml"
+      - name: Prepare data
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf data
+          unzip -q -o "$DATA_ZIP" -d data
+          echo "PYTHONPATH=.:src" >> "$GITHUB_ENV"
+      - name: Import self-test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c "import importlib.util as u;mods=['backtest.strategy','backtest.strategy_v2','backtest.runner_patched_v2_iso']; [print('[OK]' if u.find_spec(m) else '[MISS]', m) for m in mods]"
+      - name: Run backtest
+        shell: bash
+        run: |
+          set -euo pipefail
+          CAL_OPT=""; [ -f "$CALIB_JSON" ] && CAL_OPT="--calibrator $CALIB_JSON"
+          install -d "out/${{ inputs.OUTDIR }}"
+          python backtest/runner_patched_v2_iso.py --mode run \
+            --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" \
+            --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" $CAL_OPT
+      - name: Inspect outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "out/${{ inputs.OUTDIR }}/summary.json" || (echo "::error::summary.json missing" && exit 1)
+          python -c "import os,json; p='out/'+(os.environ.get('INPUT_OUTDIR','A'))+'/summary.json';print('[SUMMARY]',json.load(open(p)))"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: backtest_repo_${{ github.run_id }}
+          path: out/${{ inputs.OUTDIR }}
+          if-no-files-found: error

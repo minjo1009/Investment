@@ -1,0 +1,69 @@
+name: SensitivityScan_V2_LOCAL_REPOSTRAT
+on:
+  workflow_dispatch:
+    inputs:
+      CSV_GLOB:
+        description: Data CSV glob under data/
+        default: "**/*ETHUSDT*1min*2020*2025*.csv"
+        required: true
+        type: string
+      THR_LIST:
+        description: p_thr list
+        default: "0.86,0.88"
+        required: true
+        type: string
+      HOLD_LIST:
+        description: min_hold list
+        default: "6,8"
+        required: true
+        type: string
+      PY:
+        description: Python version
+        default: "3.11"
+        required: true
+        type: choice
+        options: ["3.11","3.10"]
+env:
+  DATA_ZIP: ETHUSDT_1min_2020_2025.zip
+  CALIB_JSON: conf/calibrator_isotonic.json
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: ${{ inputs.PY }}
+      - name: Install deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install --upgrade pip
+          pip install --prefer-binary "numpy<2.0" "llvmlite==0.42.*" "numba==0.59.*" "pandas<2.3" "scikit-learn<1.5" "pyyaml"
+      - name: Prepare data
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -q -o "$DATA_ZIP" -d data
+          echo "PYTHONPATH=.:src" >> "$GITHUB_ENV"
+      - name: Sensitivity loop
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -r -a thrs <<< "${{ inputs.THR_LIST }}"
+          IFS=',' read -r -a holds <<< "${{ inputs.HOLD_LIST }}"
+          CAL_OPT=""; [ -f "$CALIB_JSON" ] && CAL_OPT="--calibrator $CALIB_JSON"
+          for thr in "${thrs[@]}"; do
+            for hold in "${holds[@]}"; do
+              tag="thr_${thr}_hold_${hold}"
+              odir="out/${tag}"; install -d "$odir"
+              par="${odir}/params.yml"
+              THR="$thr" HOLD="$hold" PAR="$par" python -c "import os,yaml; thr=float(os.environ['THR']); hold=int(os.environ['HOLD']); d=yaml.safe_load(open('conf/params_champion.yml')); d.setdefault('entry',{}).setdefault('p_thr',{}); d['entry']['p_thr']['trend']=thr; d['entry']['p_thr']['range']=thr; d.setdefault('exit',{})['min_hold']=hold; yaml.safe_dump(d, open(os.environ['PAR'],'w'))"
+              python backtest/runner_patched_v2_iso.py --mode run --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" --params "$par" --outdir "$odir" $CAL_OPT
+            done
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sensitivity_repo_${{ github.run_id }}
+          path: out
+          if-no-files-found: error
