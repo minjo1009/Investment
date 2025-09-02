@@ -73,6 +73,7 @@ def main():
 
     repo_root = Path('.').resolve()
     spec = load_yaml(repo_root/'specs'/'strategy_v2_spec.yml')
+    paths = load_yaml(repo_root/'ops'/'paths_packaging_v2.yml')
     os.makedirs(args.outdir, exist_ok=True)
 
     params = load_yaml(args.params)
@@ -84,7 +85,6 @@ def main():
     rbp = RollingBalanceParams(win=spec['components']['structure']['rolling_balance_avoid']['win_min'],
                                tr_pctl_max=spec['components']['structure']['rolling_balance_avoid']['tr_pctl_max'])
     rb = RollingBalance(rbp)
-    ofi_lb = spec['components']['orderflow']['ofi_align']['lookback']
 
     fr = Frictions(fee_bps_per_side=params['meta'].get('fee_bps_per_side',5),
                    slippage_bps_per_side=params['meta'].get('slippage_bps_per_side',2),
@@ -92,13 +92,10 @@ def main():
     frictions_bps = fr.per_roundtrip()
 
     conv = spec['components']['gating']['conviction']
-    ev_gate = conv.get('ev_gate', {})
     gate = ConvictionParams(m=conv['persistence']['m'], k=conv['persistence']['k'],
                             thr_entry=conv['hysteresis']['thr_entry'],
                             thr_exit=conv['hysteresis']['thr_exit'],
-                            alpha_cost=ev_gate.get('alpha_cost', 0.0))
-    ev_mode = ev_gate.get('mode', 'bps')
-    ev_margin = ev_gate.get('ev_margin_bps', 0.0)
+                            alpha_cost=conv['ev_gate']['alpha_cost'])
     state = ConvictionState()
     calibrator = None
     if args.calibrator and Path(args.calibrator).exists():
@@ -143,26 +140,14 @@ def main():
     dir_hint = np.sign(macd_diff).astype(int)
 
     # Features
-    ofi_list, tr_list, in_box_list, tr_pctl_list = [], [], [], []
+    ofi_list, tr_list = [], []
     prev_close = float(df['close'].iloc[0])
     for h,l,c,o,v in zip(df['high'],df['low'],df['close'],df['open'],df['volume']):
         rb.update(float(h), float(l), float(prev_close))
-        tr_val = true_range(float(h),float(l),float(prev_close))
-        tr_list.append(tr_val)
+        tr_list.append(true_range(float(h),float(l),float(prev_close)))
         ofi_list.append(approx_ofi(float(o),float(h),float(l),float(c),float(v)))
-        s = sorted(rb.buffer)
-        if s:
-            idx = max(0, min(len(s)-1, (rbp.tr_pctl_max*len(s))//100))
-            thr = s[idx]
-            in_box = rb.buffer[-1] <= thr
-            pctl = (np.searchsorted(s, rb.buffer[-1], side='right')/len(s))*100.0
-        else:
-            in_box, pctl = False, 100.0
-        in_box_list.append(in_box)
-        tr_pctl_list.append(pctl)
         prev_close = float(c)
     df['ofi'] = ofi_list; df['tr'] = tr_list
-    df['in_box'] = in_box_list; df['tr_pctl'] = tr_pctl_list
 
     # Persistence
     m = gate.m
@@ -187,10 +172,6 @@ def main():
                 p_trend = np.clip(calibrator(p_raw), 0, 1)
             except Exception:
                 p_trend = p_raw
-    smoothing = spec['components']['signal'].get('smoothing', {})
-    ema_span = smoothing.get('ema_span', 0)
-    if ema_span:
-        p_trend = pd.Series(p_trend).ewm(span=ema_span, adjust=False).mean().clip(0,1).values
     df['p_trend'] = p_trend
 
     # Regime
@@ -202,73 +183,37 @@ def main():
     thr_trend = spec['components']['gating']['calibration']['p_thr']['trend']
     thr_range = spec['components']['gating']['calibration']['p_thr']['range']
 
-    ex_mode = params['exit'].get('mode', 'fixed')
+    tp_bps = params['exit'].get('tp_bps', 38); sl_bps = params['exit'].get('sl_bps', 22)
     min_hold = params['exit'].get('min_hold', 8); max_hold = params['exit'].get('max_hold', 60)
     be_bps = params['exit'].get('breakeven_bps', 7)
-    if ex_mode == 'dynamic_atr':
-        atr_cfg = params['exit'].get('atr', {})
-        atr_n_exit = atr_cfg.get('n', 14)
-        atr_series_exit = pd.Series(df['tr']).rolling(atr_n_exit).mean()
-        atr_bps = (atr_series_exit / df['close']).fillna(0)*10000
-        tp_mult = atr_cfg.get('tp_mult', {})
-        sl_mult = atr_cfg.get('sl_mult', {})
-        cap = atr_cfg.get('cap_bps', {})
-        loop_start = max(atr_n, m, atr_n_exit)+1
-    else:
-        tp_bps = params['exit'].get('tp_bps', 38)
-        sl_bps = params['exit'].get('sl_bps', 22)
-        loop_start = max(atr_n, m)+1
 
     position, entry_px, entry_idx = 0, 0.0, -1
     be_armed = False
     trades, gating_dbg = [], []
-    tp_bps_cur = 0.0
-    sl_bps_cur = 0.0
 
-    def calc_ev(pop, tp, sl): return pop*tp - (1.0-pop)*sl - frictions_bps
+    def calc_ev(pop): return pop*tp_bps - (1.0-pop)*sl_bps - frictions_bps
 
-    for i in range(loop_start, len(df)):
+    for i in range(max(atr_n, m)+1, len(df)):
         side = int(np.sign(dir_hint[i])); pop = float(p_trend[i])
         thr = thr_trend if regime[i]=='trend' else thr_range
         mom_k = int(aligned.iloc[i])
-        in_box = bool(df['in_box'].iloc[i])
-        tr_pctl = float(df['tr_pctl'].iloc[i])
-        ofi_ok = (int(np.sign(df['ofi'].iloc[max(0,i-ofi_lb):i].sum())) == side) if side!=0 else False
-
-        if ex_mode == 'dynamic_atr':
-            atr_val = float(atr_bps.iloc[i])
-            tp_bps_i = float(np.clip(atr_val * tp_mult.get(regime[i],1.0), cap.get('tp_min',0), cap.get('tp_max',1e9)))
-            sl_bps_i = float(np.clip(atr_val * sl_mult.get(regime[i],1.0), cap.get('sl_min',0), cap.get('sl_max',1e9)))
-        else:
-            tp_bps_i = tp_bps
-            sl_bps_i = sl_bps
-        ev_bps = calc_ev(pop, tp_bps_i, sl_bps_i)
-
-        if ev_mode == 'probability':
-            p_ev_req = (sl_bps_i + frictions_bps + ev_margin) / (tp_bps_i + sl_bps_i + 1e-9)
-            passed_ev = pop >= p_ev_req
-        else:
-            p_ev_req = None
-            passed_ev = ev_bps >= gate.alpha_cost * frictions_bps
+        ev_bps = calc_ev(pop)
+        in_box = rb.in_balance_box()
+        ofi_ok = (int(np.sign(df['ofi'].iloc[max(0,i-5):i].sum())) == side) if side!=0 else False
 
         passed_calib = pop >= thr
         passed_persist = mom_k >= gate.k
+        passed_ev = ev_bps >= gate.alpha_cost * frictions_bps
         dbg = {"i":i,"side":side,"pop":pop,"thr":thr,
                "passed_calib":bool(passed_calib),"mom_k_of_m":mom_k,
                "passed_persist":bool(passed_persist),"ev_bps":ev_bps,
-               "passed_ev":bool(passed_ev),"in_box":bool(in_box),
-               "tr_pctl":tr_pctl,"ofi_ok":bool(ofi_ok),
-               "tp_bps_i":tp_bps_i,"sl_bps_i":sl_bps_i,
-               "regime":regime[i]}
-        if ev_mode == 'probability':
-            dbg["p_ev_req"] = p_ev_req
+               "passed_ev":bool(passed_ev),"in_box":bool(in_box),"ofi_ok":bool(ofi_ok)}
 
         if position==0:
             decision = passed_calib and passed_persist and passed_ev and (not in_box) and ofi_ok and side!=0
             if decision:
                 position = side; state.last_side = side
                 entry_px = float(df['close'].iloc[i]); entry_idx = i
-                tp_bps_cur = tp_bps_i; sl_bps_cur = sl_bps_i
                 be_armed = False
                 dbg["decision"] = "enter"
             else:
@@ -278,19 +223,17 @@ def main():
             pnl_bps = (float(df['close'].iloc[i]) / entry_px - 1.0) * (10000.0) * position
             if not be_armed and pnl_bps >= be_bps:
                 be_armed = True
-            hit_tp = pnl_bps >= tp_bps_cur
-            hit_sl = pnl_bps <= (0 if be_armed else -sl_bps_cur)
+            hit_tp = pnl_bps >= tp_bps
+            hit_sl = pnl_bps <= (0 if be_armed else -sl_bps)
             time_exit = held >= max_hold
             if hit_tp or hit_sl or time_exit or (held < min_hold and hit_sl):
                 trades.append({"entry_idx":entry_idx,"exit_idx":i,"side":position,
-                               "entry_px":entry_px,"exit_px":float(df['close'].iloc[i]),
-                               "pnl_bps":pnl_bps,
-                               "tp_bps":tp_bps_cur,"sl_bps":sl_bps_cur})
+                               "entry_px":entry_px,"exit_px":float(df['close'].iloc[i]),"pnl_bps":pnl_bps})
                 position, entry_idx, entry_px = 0, -1, 0.0
                 dbg["decision"] = "exit"
             else:
                 dbg["decision"] = "hold"
-        dbg["be_armed"] = bool(be_armed)
+            dbg["be_armed"] = bool(be_armed)
         gating_dbg.append(dbg)
 
     # Metrics
@@ -311,9 +254,9 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     # trades
+    import csv
     with open(outdir/"trades.csv","w",newline="",encoding="utf-8") as f:
-        fn = list(trades[0].keys()) if trades else [
-            "entry_idx","exit_idx","side","entry_px","exit_px","pnl_bps","tp_bps","sl_bps"]
+        fn = list(trades[0].keys()) if trades else ["entry_idx","exit_idx","side","entry_px","exit_px","pnl_bps"]
         w = csv.DictWriter(f, fieldnames=fn); w.writeheader()
         for t in trades: w.writerow(t)
     # gating debug

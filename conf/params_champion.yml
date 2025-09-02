@@ -2,6 +2,10 @@ entry:
   p_thr: {trend: 0.83, range: 0.83}
 exit:
   min_hold: 8
+  max_hold: 60
+  tp_bps: 38
+  sl_bps: 22
+  breakeven_bps: 7
 meta:
   start_capital: 1000
   position_fraction: 1.0
