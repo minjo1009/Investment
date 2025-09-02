@@ -1,9 +1,4 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
-diff --git a/.github/workflows/SensitivityScan_V2_LOCAL_REPOSTRAT.yml b/.github/workflows/SensitivityScan_V2_LOCAL_REPOSTRAT.yml
-index 83f9462af430c558cd80027bb4d0134f850ec08a..927ca76cd6e57bde6160c0079fc23c3e3e6a1057 100644
---- a/.github/workflows/SensitivityScan_V2_LOCAL_REPOSTRAT.yml
-+++ b/.github/workflows/SensitivityScan_V2_LOCAL_REPOSTRAT.yml
-@@ -1,99 +1,93 @@
+
  name: SensitivityScan_V2_LOCAL_REPOSTRAT
  on:
    workflow_dispatch:
