@@ -217,7 +217,7 @@ def main():
 
         passed_calib = pop >= thr
         passed_persist = mom_k >= gate.k
-        passed_ev = ev_bps >= gate.alpha_cost
+        passed_ev = ev_bps >= gate.alpha_cost * frictions_bps
         dbg = {"i":i,"side":side,"pop":pop,"thr":thr,
                "passed_calib":bool(passed_calib),"mom_k_of_m":mom_k,
                "passed_persist":bool(passed_persist),"ev_bps":ev_bps,
