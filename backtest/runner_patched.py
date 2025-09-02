@@ -34,10 +34,24 @@ try:
             except Exception: pass
         return out
     def _ensure_timestamp(df):
-        if "timestamp" in df.columns and df["timestamp"].notna().any(): return df
+        if "timestamp" in df.columns and df["timestamp"].notna().any():
+            return df
         cands = [c for c in df.columns if str(c).lower() in ("timestamp","datetime","open_time","time_open","candle_begin_time","ts","t","date","time")]
         order = ["timestamp","datetime","open_time","time_open","candle_begin_time","ts","t","date","time"]
         cands.sort(key=lambda c: order.index(str(c).lower()) if str(c).lower() in order else 999)
+        for c in cands:
+            if str(c).lower() in ("date","time"):
+                continue
+            ts = _to_utc(df[c])
+            if ts.notna().any():
+                df["timestamp"] = ts
+                break
+        if "timestamp" not in df.columns or df["timestamp"].isna().all():
+            if "date" in df.columns and "time" in df.columns:
+                combo = df["date"].astype(str) + " " + df["time"].astype(str)
+                ts = _to_utc(combo)
+                if ts.notna().any():
+                    df["timestamp"] = ts
         if "timestamp" in df.columns:
             df.sort_values("timestamp", inplace=True, ignore_index=True)
             df.drop_duplicates(subset=["timestamp"], keep="last", inplace=True)

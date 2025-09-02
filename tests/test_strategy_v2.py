@@ -108,3 +108,27 @@ def test_artifacts_schema(tmp_path: Path):
     summary = json.load(open(outdir / 'summary.json'))
     for k in ['n_trades','hit_rate','mcc','cum_pnl_bps']:
         assert k in summary
+
+
+def test_accepts_datetime_column(tmp_path: Path):
+    csv_path = _make_dummy(tmp_path)
+    df = pd.read_csv(csv_path)
+    df.rename(columns={'timestamp': 'datetime'}, inplace=True)
+    df.to_csv(csv_path, index=False)
+    outdir = tmp_path / 'out'
+    outdir.mkdir()
+    params = yaml.safe_load(open('conf/params_champion.yml'))
+    yaml.safe_dump(params, open(tmp_path / 'params.yml', 'w'))
+    cmd = [
+        sys.executable,
+        'backtest/runner_patched.py',
+        '--data-root', str(csv_path.parent),
+        '--csv-glob', csv_path.name,
+        '--params', str(tmp_path / 'params.yml'),
+        '--outdir', str(outdir)
+    ]
+    env = os.environ.copy()
+    env.setdefault('PYTHONPATH', '.')
+    subprocess.check_call(cmd, env=env)
+    preds = pd.read_csv(outdir / 'preds_test.csv')
+    assert len(preds) == 120
