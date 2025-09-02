@@ -24,17 +24,22 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: ${{ inputs.PY }}
+
       - name: Locate runner & ensure params
         shell: bash
         run: |
           set -e
           echo "PYTHONPATH=.:src" >> "$GITHUB_ENV"
+          RUNNER=""
           for f in backtest/runner_patched_v2_iso.py backtest/runner_patched.py backtest/runner.py; do
-            if [ -f "$f" ]; then echo "RUNNER=$f" >> "$GITHUB_ENV"; echo "Using runner: $f"; break; fi
+            if [ -f "$f" ]; then RUNNER="$f"; break; fi
           done
-          grep -q '^RUNNER=' "$GITHUB_ENV" || { echo "::error::No runner under backtest/"; exit 1; }
-          [ -f conf/params_champion.yml ] || { echo "::error::conf/params_champion.yml missing"; exit 1; }
-      - name: Prepare data (unzip → data/, recurse nested)
+          if [ -z "$RUNNER" ]; then echo "::error::No runner under backtest/"; exit 1; fi
+          if [ ! -f conf/params_champion.yml ]; then echo "::error::conf/params_champion.yml missing"; exit 1; fi
+          echo "RUNNER=$RUNNER" >> "$GITHUB_ENV"
+          echo "Using runner: $RUNNER"
+
+      - name: Prepare data (ZIP → data/, recurse; pick first CSV)
         shell: bash
         run: |
           set -e
@@ -48,22 +53,15 @@ jobs:
             done
           fi
           [ -d data ] || { echo "::error::No data found (put ZIP at repo root or add data/)"; exit 1; }
-          find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d=`dirname "$z"`; echo "::notice::Unzipping nested $z"; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
+          find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d=`dirname "$z"`; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
           find data -type f -name '*.csv.gz' -print0 | xargs -0 -I{} sh -c 'gzip -df "{}" || true'
-          # Pick first CSV and make pattern relative to data/
-          python - <<'PY'
-import os, glob, sys
-root='data'
-csvs = glob.glob(os.path.join(root,'**','*.csv'), recursive=True)
-if not csvs:
-    print('::error::No CSV files found under data/'); sys.exit(1)
-csv = sorted(csvs)[0]
-rel = os.path.relpath(csv, root)
-with open(os.environ['GITHUB_ENV'],'a') as w:
-    w.write('DATA_ROOT='+root+'\n')
-    w.write('CSV_PATTERN='+rel+'\n')
-print('::notice::Selected CSV_PATTERN', rel)
-PY
+          csv="$(find data -type f -name '*.csv' | sort | head -n1)"
+          if [ -z "$csv" ]; then echo "::error::No CSV files under data/"; exit 1; fi
+          rel="${csv#data/}"
+          echo "DATA_ROOT=data" >> "$GITHUB_ENV"
+          echo "CSV_PATTERN=$rel" >> "$GITHUB_ENV"
+          echo "::notice::Selected CSV_PATTERN $rel"
+
       - name: Install dependencies
         shell: bash
         run: |
@@ -71,6 +69,7 @@ PY
           python -V; python -m pip -V
           python -m pip install --upgrade pip
           python -m pip install --prefer-binary 'numpy<2.0' 'llvmlite==0.42.*' 'numba==0.59.*' 'pandas<2.3' 'scikit-learn<1.5' 'pyyaml'
+
       - name: Determine runner --mode support
         shell: bash
         run: |
@@ -79,6 +78,7 @@ PY
           python "$RUNNER" -h > .runner_help.txt 2>&1 || true
           if grep -q -- "--mode" .runner_help.txt; then MODE_OPT="--mode run"; fi
           echo "MODE_OPT=$MODE_OPT" >> "$GITHUB_ENV"
+
       - name: Run backtest
         shell: bash
         run: |
@@ -90,8 +90,8 @@ PY
           else
             python "$RUNNER" --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" $CAL_OPT
           fi
-      - name: Upload outputs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: backtest_repo_${{ github.run_id }}
           path: out/${{ inputs.OUTDIR }}
