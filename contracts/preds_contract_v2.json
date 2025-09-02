@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Predictions Output Contract v2",
+  "type": "object",
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "p_hat": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "p_hat_calibrated": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "regime": {
+      "type": "string",
+      "enum": [
+        "trend",
+        "range"
+      ]
+    },
+    "signal_dir": {
+      "type": "integer",
+      "enum": [
+        -1,
+        0,
+        1
+      ]
+    },
+    "ofi": {
+      "type": "number"
+    },
+    "balance_state": {
+      "type": "string",
+      "enum": [
+        "in_box",
+        "out_box"
+      ]
+    }
+  },
+  "required": [
+    "timestamp",
+    "p_hat",
+    "regime",
+    "signal_dir"
+  ],
+  "additionalProperties": true
+}
