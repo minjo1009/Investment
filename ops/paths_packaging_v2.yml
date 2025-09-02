@@ -1,9 +1,8 @@
-data_root: data
-csv_glob_default: "**/*ETHUSDT*1min*2020*2025*.csv"
-codepack_root: _codepack
-pythonpath_candidates:
-  - "_codepack"
-  - "_codepack/src"
-  - "src"
-  - "."
-artifacts_dir: out
+# Packaging paths for outputs (runner가 안 쓰더라도 안전한 상위 매핑)
+out:
+  summary_json: out/summary.json
+  gating_debug: out/gating_debug.json
+  preds_csv:    out/preds_test.csv
+  trades_csv:   out/trades.csv
+  logs_dir:     out/logs
+  figures_dir:  out/figs
