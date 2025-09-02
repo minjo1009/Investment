@@ -1,0 +1,6 @@
+numpy<2.0
+llvmlite==0.42.*
+numba==0.59.*
+pandas<2.3
+scikit-learn<1.5
+PyYAML>=6,<7
