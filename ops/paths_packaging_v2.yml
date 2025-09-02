@@ -1,0 +1,9 @@
+data_root: data
+csv_glob_default: "**/*ETHUSDT*1min*2020*2025*.csv"
+codepack_root: _codepack
+pythonpath_candidates:
+  - "_codepack"
+  - "_codepack/src"
+  - "src"
+  - "."
+artifacts_dir: out
