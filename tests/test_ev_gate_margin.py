@@ -1,4 +1,4 @@
-import json, subprocess, sys
+import json, subprocess, sys, os
 from pathlib import Path
 
 import pandas as pd
@@ -8,6 +8,7 @@ from test_strategy_v2 import _make_dummy
 
 
 def _run(tmp: Path, delta: float) -> Path:
+    tmp.mkdir(parents=True, exist_ok=True)
     csv_path = _make_dummy(tmp)
     outdir = tmp / 'out'
     outdir.mkdir()
@@ -22,7 +23,7 @@ def _run(tmp: Path, delta: float) -> Path:
         '--params', str(tmp / 'params.yml'),
         '--outdir', str(outdir)
     ]
-    subprocess.check_call(cmd)
+    env = dict(os.environ, PYTHONPATH=os.getcwd()); subprocess.check_call(cmd, env=env)
     return outdir
 
 
