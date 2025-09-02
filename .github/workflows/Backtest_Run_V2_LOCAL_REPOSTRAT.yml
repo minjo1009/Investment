@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       CSV_GLOB:
-        description: Data CSV glob under data/
+        description: Data CSV glob under data/ (leave default; we auto-fallback if no match)
         default: "**/*ETHUSDT*1min*2020*2025*.csv"
         required: true
         type: string
@@ -29,21 +29,33 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: ${{ inputs.PY }}
+
       - name: Locate runner & params
-        id: locate
         shell: bash
         run: |
           set -euo pipefail
           echo "PYTHONPATH=.:src" >> "$GITHUB_ENV"
-          runners=( "backtest/runner_patched_v2_iso.py" "backtest/runner_patched.py" "backtest/runner.py" )
-          RUNNER=""
-          for f in "${runners[@]}"; do
-            if [ -f "$f" ]; then RUNNER="$f"; break; fi
+          for f in backtest/runner_patched_v2_iso.py backtest/runner_patched.py backtest/runner.py; do
+            if [ -f "$f" ]; then echo "RUNNER=$f" >> "$GITHUB_ENV"; echo "Using runner: $f"; break; fi
           done
-          [ -n "$RUNNER" ] || { echo "::error::No runner found under backtest/"; exit 1; }
+          grep -q '^RUNNER=' "$GITHUB_ENV" || { echo "::error::No runner found under backtest/"; exit 1; }
           [ -f "conf/params_champion.yml" ] || { echo "::error::conf/params_champion.yml missing"; exit 1; }
-          echo "RUNNER=$RUNNER" >> "$GITHUB_ENV"
-          echo "Using runner: $RUNNER"
+
+      - name: Prepare raw data (recursive unzip + fallback glob)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf data || true
+          if [ -f "$DATA_ZIP" ]; then unzip -q -o "$DATA_ZIP" -d data; fi
+          if [ ! -d data ]; then echo "::error::No data found. Put $DATA_ZIP at repo root or add data/"; exit 1; fi
+          # Recursively unpack nested zips inside data/
+          find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d="$(dirname "$z")"; echo "::notice::Unzipping nested $z"; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
+          # Decompress any .csv.gz
+          find data -type f -name '*.csv.gz' -print0 | xargs -0 -I{} sh -c 'gzip -df "{}" || true'
+          # Decide effective CSV glob
+          MATCHES=$(python - <<'PY'\nimport glob,os,sys\npat=os.environ.get('INPUT_CSV_GLOB') or '**/*.csv'\nms=glob.glob(os.path.join('data',pat), recursive=True)\nprint(len(ms))\nPY\n)
+          if [ "${MATCHES}" = "0" ]; then echo "::warning::No match for '${{ inputs.CSV_GLOB }}'. Falling back to '**/*.csv'"; echo "CSV_GLOB_EFF=**/*.csv" >> "$GITHUB_ENV"; else echo "CSV_GLOB_EFF=${{ inputs.CSV_GLOB }}" >> "$GITHUB_ENV"; fi
+
       - name: Install dependencies
         shell: bash
         run: |
@@ -51,33 +63,24 @@ jobs:
           python -V; pip -V
           pip install --upgrade pip
           pip install --prefer-binary "numpy<2.0" "llvmlite==0.42.*" "numba==0.59.*" "pandas<2.3" "scikit-learn<1.5" "pyyaml"
-      - name: Prepare data
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf data || true
-          if [ -f "$DATA_ZIP" ]; then
-            unzip -q -o "$DATA_ZIP" -d data
-          elif [ -d "data" ]; then
-            echo "Using existing data/ directory"
-          else
-            echo "::error::No data found. Place $DATA_ZIP at repo root or add data/ directory."; exit 1
-          fi
+
       - name: Run backtest
         shell: bash
         run: |
           set -euo pipefail
           CAL_OPT=""; [ -f "$CALIB_JSON" ] && CAL_OPT="--calibrator $CALIB_JSON"
           install -d "out/${{ inputs.OUTDIR }}"
-          python "$RUNNER" --mode run \
-            --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" \
+          python "$(grep ^RUNNER= "$GITHUB_ENV" | tail -n1 | cut -d= -f2-)" --mode run \
+            --data-root data --csv-glob "${CSV_GLOB_EFF}" \
             --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" $CAL_OPT
+
       - name: Inspect outputs
         shell: bash
         run: |
           set -euo pipefail
           test -f "out/${{ inputs.OUTDIR }}/summary.json" || (echo "::error::summary.json missing" && exit 1)
           python -c "import os,json; p='out/'+(os.environ.get('INPUT_OUTDIR','A'))+'/summary.json';print('[SUMMARY]',json.load(open(p)))"
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: backtest_repo_${{ github.run_id }}

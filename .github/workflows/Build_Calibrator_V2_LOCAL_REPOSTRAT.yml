@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       CSV_GLOB:
-        description: Data CSV glob under data/
+        description: Data CSV glob under data/ (auto-fallback to **/*.csv if no match)
         default: "**/*ETHUSDT*1min*2020*2025*.csv"
         required: true
         type: string
@@ -18,6 +18,7 @@ on:
         type: choice
         options: ["3.11","3.10"]
 env:
+  DATA_ZIP: ETHUSDT_1min_2020_2025.zip
   CALIB_JSON: conf/calibrator_isotonic.json
   CALIB_PY_CAND1: conf/isotonic_calibrator_v2.py
   CALIB_PY_CAND2: tools/isotonic_calibrator_v2.py
@@ -29,12 +30,26 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: ${{ inputs.PY }}
+
       - name: Install deps
         shell: bash
         run: |
           set -euo pipefail
           pip install --upgrade pip
           pip install --prefer-binary "numpy<2.0" "pandas<2.3" "scikit-learn<1.5" "pyyaml"
+
+      - name: Prepare raw data (recursive unzip + fallback glob)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf data || true
+          if [ -f "$DATA_ZIP" ]; then unzip -q -o "$DATA_ZIP" -d data; fi
+          [ -d data ] || { echo "::error::No data found. Put $DATA_ZIP or add data/"; exit 1; }
+          find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d="$(dirname "$z")"; echo "::notice::Unzipping nested $z"; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
+          find data -type f -name '*.csv.gz' -print0 | xargs -0 -I{} sh -c 'gzip -df "{}" || true'
+          MATCHES=$(python - <<'PY'\nimport glob,os\npat=os.environ.get('INPUT_CSV_GLOB') or '**/*.csv'\nms=glob.glob(os.path.join('data',pat), recursive=True)\nprint(len(ms))\nPY\n)
+          if [ "${MATCHES}" = "0" ]; then echo "::warning::No match for '${{ inputs.CSV_GLOB }}'. Falling back to '**/*.csv'"; echo "CSV_GLOB_EFF=**/*.csv" >> "$GITHUB_ENV"; else echo "CSV_GLOB_EFF=${{ inputs.CSV_GLOB }}" >> "$GITHUB_ENV"; fi
+
       - name: Locate calibrator script
         shell: bash
         run: |
@@ -42,16 +57,16 @@ jobs:
           if   [ -f "$CALIB_PY_CAND1" ]; then echo "CALIB_PY=$CALIB_PY_CAND1" >> "$GITHUB_ENV"; echo "Using $CALIB_PY_CAND1"
           elif [ -f "$CALIB_PY_CAND2" ]; then echo "CALIB_PY=$CALIB_PY_CAND2" >> "$GITHUB_ENV"; echo "Using $CALIB_PY_CAND2"
           else echo "::error::isotonic_calibrator_v2.py not found (conf/ or tools/)."; exit 1; fi
-      - name: Make samples (if needed)
+
+      - name: Make samples (CSV → samples)
+        if: ${{ inputs.USE_PREDS_FROM == '' }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.USE_PREDS_FROM }}" ]; then
-            echo "Using existing preds from ${{ inputs.USE_PREDS_FROM }}"
-          else
-            echo "::notice::Building samples from CSVs under data/"
-            python "$CALIB_PY" make-samples --data-root data --csv-glob "${{ inputs.CSV_GLOB }}" --horizon ${{ inputs.HORIZON }} --tp-bps ${{ inputs.TP_BPS }} --sl-bps ${{ inputs.SL_BPS }} --out out/calib_samples.csv
-          fi
+          python "$CALIB_PY" make-samples --data-root data --csv-glob "${CSV_GLOB_EFF}" \
+            --horizon ${{ inputs.HORIZON }} --tp-bps ${{ inputs.TP_BPS }} --sl-bps ${{ inputs.SL_BPS }} \
+            --out out/calib_samples.csv
+
       - name: Fit calibrator JSON
         shell: bash
         run: |
@@ -62,6 +77,7 @@ jobs:
             python "$CALIB_PY" fit --samples out/calib_samples.csv --out "$CALIB_JSON"
           fi
           test -f "$CALIB_JSON" || (echo "::error::calibrator JSON missing" && exit 1)
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: calibrator_repo_${{ github.run_id }}
