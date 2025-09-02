@@ -181,7 +181,8 @@ def main():
   if not paths:
     raise SystemExit('no data files')
   df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
-  df.rename(columns={'timestamp': 'open_time'}, inplace=True)
+  if 'timestamp' in df.columns:
+    df['open_time'] = df.pop('timestamp')
   df = ensure_ofi_columns(df)
   # open_time to UTC Timestamp conversion (vectorized)
   df = normalize_open_time(df)
