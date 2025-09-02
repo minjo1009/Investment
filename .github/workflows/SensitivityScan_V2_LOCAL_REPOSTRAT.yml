@@ -1,105 +1,98 @@
 name: SensitivityScan_V2_LOCAL_REPOSTRAT
- on:
-   workflow_dispatch:
-     inputs:
-       THR_LIST:
-         description: p_thr list (comma)
-         default: "0.86,0.88"
-         required: true
-         type: string
-       HOLD_LIST:
-         description: min_hold list (comma)
-         default: "6,8"
-         required: true
-         type: string
--      PY:
--        description: Python version
--        default: "3.11"
--        required: true
--        type: choice
--        options: ["3.11","3.10"]
- env:
-   DATA_ZIP: ETHUSDT_1min_2020_2025.zip
-   CALIB_JSON: conf/calibrator_isotonic.json
- jobs:
-   scan:
-     runs-on: ubuntu-latest
-     steps:
-       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
--      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-+      - uses: actions/setup-python@v5
-         with:
--          python-version: ${{ inputs.PY }}
-+          python-version: '3.11'
- 
-       - name: Locate runner & ensure params
-         shell: bash
-         run: |
-           set -e
-           echo "PYTHONPATH=.:src" >> "$GITHUB_ENV"
-           RUNNER=""
-           for f in backtest/runner_patched_v2_iso.py backtest/runner_patched.py backtest/runner.py; do
-             if [ -f "$f" ]; then RUNNER="$f"; break; fi
-           done
-           if [ -z "$RUNNER" ]; then echo "::error::No runner under backtest/"; exit 1; fi
-           if [ ! -f conf/params_champion.yml ]; then echo "::error::conf/params_champion.yml missing"; exit 1; fi
-           echo "RUNNER=$RUNNER" >> "$GITHUB_ENV"
- 
-       - name: Prepare data and select CSV (pure POSIX)
-         shell: bash
-         run: |
-           set -e
-           rm -rf data || true
-           [ -f "$DATA_ZIP" ] && unzip -q -o "$DATA_ZIP" -d data || true
-           if [ ! -d data ]; then
-             for z in *.zip; do
-               [ -f "$z" ] || continue
-               mkdir -p data
-               unzip -q -o "$z" -d data || true
-             done
-           fi
-           [ -d data ] || { echo "::error::No data found (put ZIP at repo root or add data/)"; exit 1; }
-           find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d=`dirname "$z"`; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
-           find data -type f -name '*.csv.gz' -print0 | xargs -0 -I{} sh -c 'gzip -df "{}" || true'
-           csv="$(find data -type f -name '*.csv' | sort | head -n1)"
-           if [ -z "$csv" ]; then echo "::error::No CSV files under data/"; exit 1; fi
-           rel="${csv#data/}"
-           echo "DATA_ROOT=data" >> "$GITHUB_ENV"
-           echo "CSV_PATTERN=$rel" >> "$GITHUB_ENV"
-           echo "::notice::Selected CSV_PATTERN $rel"
- 
-       - name: Install deps
-         shell: bash
-         run: |
-           set -e
-           python -m pip install --upgrade pip
--          python -m pip install --prefer-binary 'numpy<2.0' 'llvmlite==0.42.*' 'numba==0.59.*' 'pandas<2.3' 'scikit-learn<1.5' 'pyyaml'
-+          python -m pip install --prefer-binary -r requirements.txt
- 
-       - name: Determine runner --mode support
-         shell: bash
-         run: |
-           set -e
-           MODE_OPT=""
-           python "$RUNNER" -h > .runner_help.txt 2>&1 || true
-           if grep -q -- "--mode" .runner_help.txt; then MODE_OPT="--mode run"; fi
-           echo "MODE_OPT=$MODE_OPT" >> "$GITHUB_ENV"
- 
-       - name: Sensitivity loop
-         shell: bash
-         run: |
-           set -e
-           CAL_OPT=""; if [ -f "$CALIB_JSON" ]; then CAL_OPT="--calibrator $CALIB_JSON"; fi
-           IFS=',' read -r -a thrs <<<'${{ inputs.THR_LIST }}'
-           IFS=',' read -r -a holds <<<'${{ inputs.HOLD_LIST }}'
-           for thr in "${thrs[@]}"; do
-             for hold in "${holds[@]}"; do
-               tag="thr_${thr}_hold_${hold}"
-               odir="out/${tag}"; install -d "$odir"
-               par="${odir}/params.yml"
-               THR="$thr" HOLD="$hold" PAR="$par" python -c "import os,yaml; thr=float(os.environ['THR']); hold=int(os.environ['HOLD']); d=yaml.safe_load(open('conf/params_champion.yml')); d.setdefault('entry',{}).setdefault('p_thr',{}); d['entry']['p_thr']['trend']=thr; d['entry']['p_thr']['range']=thr; d.setdefault('exit',{})['min_hold']=hold; yaml.safe_dump(d, open(os.environ['PAR'],'w'))"
-               if [ -n "$MODE_OPT" ]; then
-                 python "$RUNNER" $MODE_OPT --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params "$par" --outdir "$odir" $CAL_OPT
- 
-EOF
-)
+on:
+  workflow_dispatch:
+    inputs:
+      THR_LIST:
+        description: p_thr list (comma)
+        default: "0.86,0.88"
+        required: true
+        type: string
+      HOLD_LIST:
+        description: min_hold list (comma)
+        default: "6,8"
+        required: true
+        type: string
+env:
+  DATA_ZIP: ETHUSDT_1min_2020_2025.zip
+  CALIB_JSON: conf/calibrator_isotonic.json
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Locate runner & ensure params
+        shell: bash
+        run: |
+          set -e
+          echo "PYTHONPATH=.:src" >> "$GITHUB_ENV"
+          RUNNER=""
+          for f in backtest/runner_patched_v2_iso.py backtest/runner_patched.py backtest/runner.py; do
+            if [ -f "$f" ]; then RUNNER="$f"; break; fi
+          done
+          if [ -z "$RUNNER" ]; then echo "::error::No runner under backtest/"; exit 1; fi
+          if [ ! -f conf/params_champion.yml ]; then echo "::error::conf/params_champion.yml missing"; exit 1; fi
+          echo "RUNNER=$RUNNER" >> "$GITHUB_ENV"
+
+      - name: Prepare data and select CSV (pure POSIX)
+        shell: bash
+        run: |
+          set -e
+          rm -rf data || true
+          [ -f "$DATA_ZIP" ] && unzip -q -o "$DATA_ZIP" -d data || true
+          if [ ! -d data ]; then
+            for z in *.zip; do
+              [ -f "$z" ] || continue
+              mkdir -p data
+              unzip -q -o "$z" -d data || true
+            done
+          fi
+          [ -d data ] || { echo "::error::No data found (put ZIP at repo root or add data/)"; exit 1; }
+          find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d=`dirname "$z"`; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
+          find data -type f -name '*.csv.gz' -print0 | xargs -0 -I{} sh -c 'gzip -df "{}" || true'
+          csv="$(find data -type f -name '*.csv' | sort | head -n1)"
+          if [ -z "$csv" ]; then echo "::error::No CSV files under data/"; exit 1; fi
+          rel="${csv#data/}"
+          echo "DATA_ROOT=data" >> "$GITHUB_ENV"
+          echo "CSV_PATTERN=$rel" >> "$GITHUB_ENV"
+          echo "::notice::Selected CSV_PATTERN $rel"
+
+      - name: Install deps
+        shell: bash
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          python -m pip install --prefer-binary -r requirements.txt
+
+      - name: Determine runner --mode support
+        shell: bash
+        run: |
+          set -e
+          MODE_OPT=""
+          python "$RUNNER" -h > .runner_help.txt 2>&1 || true
+          if grep -q -- "--mode" .runner_help.txt; then MODE_OPT="--mode run"; fi
+          echo "MODE_OPT=$MODE_OPT" >> "$GITHUB_ENV"
+
+      - name: Sensitivity loop
+        shell: bash
+        run: |
+          set -e
+          CAL_OPT=""; if [ -f "$CALIB_JSON" ]; then CAL_OPT="--calibrator $CALIB_JSON"; fi
+          IFS=',' read -r -a thrs <<<'${{ inputs.THR_LIST }}'
+          IFS=',' read -r -a holds <<<'${{ inputs.HOLD_LIST }}'
+          for thr in "${thrs[@]}"; do
+            for hold in "${holds[@]}"; do
+              tag="thr_${thr}_hold_${hold}"
+              odir="out/${tag}"; install -d "$odir"
+              par="${odir}/params.yml"
+              THR="$thr" HOLD="$hold" PAR="$par" python -c "import os,yaml; thr=float(os.environ['THR']); hold=int(os.environ['HOLD']); d=yaml.safe_load(open('conf/params_champion.yml')); d.setdefault('entry',{}).setdefault('p_thr',{}); d['entry']['p_thr']['trend']=thr; d['entry']['p_thr']['range']=thr; d.setdefault('exit',{})['min_hold']=hold; yaml.safe_dump(d, open(os.environ['PAR'],'w'))"
+              if [ -n "$MODE_OPT" ]; then
+                python "$RUNNER" $MODE_OPT --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params "$par" --outdir "$odir" $CAL_OPT
+              else
+                python "$RUNNER" --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params "$par" --outdir "$odir" $CAL_OPT
+              fi
+            done
+          done

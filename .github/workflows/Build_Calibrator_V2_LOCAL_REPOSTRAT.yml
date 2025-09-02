@@ -1,97 +1,79 @@
+name: Build_Calibrator_V2_LOCAL_REPOSTRAT
+on:
+  workflow_dispatch:
+    inputs:
+      USE_PREDS_FROM:
+        description: Optional outdir to read preds_test.csv (e.g. out/A)
+        default: ""
+        required: false
+        type: string
+env:
+  DATA_ZIP: ETHUSDT_1min_2020_2025.zip
+  CALIB_JSON: conf/calibrator_isotonic.json
+  CALIB_PY_CAND1: conf/isotonic_calibrator_v2.py
+  CALIB_PY_CAND2: tools/isotonic_calibrator_v2.py
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
- on:
-   workflow_dispatch:
-     inputs:
-       USE_PREDS_FROM:
-         description: Optional outdir to read preds_test.csv (e.g. out/A)
-         default: ""
-         required: false
-         type: string
--      PY:
--        description: Python version
--        default: "3.11"
--        required: true
--        type: choice
--        options: ["3.11","3.10"]
- env:
-   DATA_ZIP: ETHUSDT_1min_2020_2025.zip
-   CALIB_JSON: conf/calibrator_isotonic.json
-   CALIB_PY_CAND1: conf/isotonic_calibrator_v2.py
-   CALIB_PY_CAND2: tools/isotonic_calibrator_v2.py
- jobs:
-   build:
-     runs-on: ubuntu-latest
-     steps:
-       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
--      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-+      - uses: actions/setup-python@v5
-         with:
--          python-version: ${{ inputs.PY }}
-+          python-version: '3.11'
- 
-       - name: Prepare data and pick CSV (when building from CSV)
-         if: ${{ inputs.USE_PREDS_FROM == '' }}
-         shell: bash
-         run: |
-           set -e
-           rm -rf data || true
-           [ -f "$DATA_ZIP" ] && unzip -q -o "$DATA_ZIP" -d data || true
-           [ -d data ] || { echo "::error::No data found and USE_PREDS_FROM not set"; exit 1; }
-           find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d=`dirname "$z"`; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
-           find data -type f -name '*.csv.gz' -print0 | xargs -0 -I{} sh -c 'gzip -df "{}" || true'
-           csv="$(find data -type f -name '*.csv' | sort | head -n1)"
-           if [ -z "$csv" ]; then echo "::error::No CSV files under data/"; exit 1; fi
-           rel="${csv#data/}"
-           echo "DATA_ROOT=data" >> "$GITHUB_ENV"
-           echo "CSV_PATTERN=$rel" >> "$GITHUB_ENV"
-           echo "::notice::Selected CSV_PATTERN $rel"
- 
-       - name: Locate calibrator script
-         shell: bash
-         run: |
-           set -e
-           if   [ -f "$CALIB_PY_CAND1" ]; then echo "CALIB_PY=$CALIB_PY_CAND1" >> "$GITHUB_ENV"; echo "Using $CALIB_PY_CAND1"
-           elif [ -f "$CALIB_PY_CAND2" ]; then echo "CALIB_PY=$CALIB_PY_CAND2" >> "$GITHUB_ENV"; echo "Using $CALIB_PY_CAND2"
-           else echo "::error::isotonic_calibrator_v2.py not found (conf/ or tools/)"; exit 1; fi
- 
-       - name: Install deps
-         shell: bash
-         run: |
-           set -e
-           python -m pip install --upgrade pip
--          python -m pip install --prefer-binary 'numpy<2.0' 'pandas<2.3' 'scikit-learn<1.5' 'pyyaml'
-+          python -m pip install --prefer-binary -r requirements.txt
- 
--      - name: Build calibrator JSON
-+      - name: Build calibrator JSON or bins
-         shell: bash
-         run: |
-           set -e
--          if [ -n "${{ inputs.USE_PREDS_FROM }}" ]; then
--            python "$CALIB_PY" fit --from-outdir "${{ inputs.USE_PREDS_FROM }}" --out "$CALIB_JSON"
-+          if python -c "import sklearn" 2>/dev/null; then
-+            if [ -n "${{ inputs.USE_PREDS_FROM }}" ]; then
-+              python "$CALIB_PY" fit --from-outdir "${{ inputs.USE_PREDS_FROM }}" --out "$CALIB_JSON"
-+            else
-+              python "$CALIB_PY" make-samples --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --horizon 30 --tp-bps 38 --sl-bps 22 --out out/calib_samples.csv
-+              python "$CALIB_PY" fit --samples out/calib_samples.csv --out "$CALIB_JSON"
-+            fi
-+            [ -f "$CALIB_JSON" ] || { echo "::error::calibrator JSON missing"; exit 1; }
-           else
--            python "$CALIB_PY" make-samples --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --horizon 30 --tp-bps 38 --sl-bps 22 --out out/calib_samples.csv
--            python "$CALIB_PY" fit --samples out/calib_samples.csv --out "$CALIB_JSON"
-+            src="${{ inputs.USE_PREDS_FROM }}"; [ -z "$src" ] && src="out"
-+            python tools/fit_calibrator_bins.py --preds "$src/preds_test.csv" --out conf/calibrator_bins.json
-           fi
--          [ -f "$CALIB_JSON" ] || { echo "::error::calibrator JSON missing"; exit 1; }
- 
-       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-         with:
-           name: calibrator_repo_${{ github.run_id }}
-           path: |
-             ${{ env.CALIB_JSON }}
-             out/calib_samples.csv
-           if-no-files-found: ignore
- 
-EOF
-)
+      - name: Prepare data and pick CSV (when building from CSV)
+        if: ${{ inputs.USE_PREDS_FROM == '' }}
+        shell: bash
+        run: |
+          set -e
+          rm -rf data || true
+          [ -f "$DATA_ZIP" ] && unzip -q -o "$DATA_ZIP" -d data || true
+          [ -d data ] || { echo "::error::No data found and USE_PREDS_FROM not set"; exit 1; }
+          find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d=`dirname "$z"`; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
+          find data -type f -name '*.csv.gz' -print0 | xargs -0 -I{} sh -c 'gzip -df "{}" || true'
+          csv="$(find data -type f -name '*.csv' | sort | head -n1)"
+          if [ -z "$csv" ]; then echo "::error::No CSV files under data/"; exit 1; fi
+          rel="${csv#data/}"
+          echo "DATA_ROOT=data" >> "$GITHUB_ENV"
+          echo "CSV_PATTERN=$rel" >> "$GITHUB_ENV"
+          echo "::notice::Selected CSV_PATTERN $rel"
+
+      - name: Locate calibrator script
+        shell: bash
+        run: |
+          set -e
+          if   [ -f "$CALIB_PY_CAND1" ]; then echo "CALIB_PY=$CALIB_PY_CAND1" >> "$GITHUB_ENV"; echo "Using $CALIB_PY_CAND1"
+          elif [ -f "$CALIB_PY_CAND2" ]; then echo "CALIB_PY=$CALIB_PY_CAND2" >> "$GITHUB_ENV"; echo "Using $CALIB_PY_CAND2"
+          else echo "::error::isotonic_calibrator_v2.py not found (conf/ or tools/)"; exit 1; fi
+
+      - name: Install deps
+        shell: bash
+        run: |
+          set -e
+          python -m pip install --upgrade pip
+          python -m pip install --prefer-binary -r requirements.txt
+
+      - name: Build calibrator JSON or bins
+        shell: bash
+        run: |
+          set -e
+          if python -c "import sklearn" 2>/dev/null; then
+            if [ -n "${{ inputs.USE_PREDS_FROM }}" ]; then
+              python "$CALIB_PY" fit --from-outdir "${{ inputs.USE_PREDS_FROM }}" --out "$CALIB_JSON"
+            else
+              python "$CALIB_PY" make-samples --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --horizon 30 --tp-bps 38 --sl-bps 22 --out out/calib_samples.csv
+              python "$CALIB_PY" fit --samples out/calib_samples.csv --out "$CALIB_JSON"
+            fi
+            [ -f "$CALIB_JSON" ] || { echo "::error::calibrator JSON missing"; exit 1; }
+          else
+            src="${{ inputs.USE_PREDS_FROM }}"; [ -z "$src" ] && src="out"
+            python tools/fit_calibrator_bins.py --preds "$src/preds_test.csv" --out conf/calibrator_bins.json
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: calibrator_repo_${{ github.run_id }}
+          path: |
+            ${{ env.CALIB_JSON }}
+            out/calib_samples.csv
+          if-no-files-found: ignore

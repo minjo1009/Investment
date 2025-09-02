@@ -1,4 +1,4 @@
-import json, subprocess, sys
+import json, subprocess, sys, os
 from pathlib import Path
 
 import pandas as pd
@@ -22,7 +22,9 @@ def _run(tmp: Path, delta: float) -> Path:
         '--params', str(tmp / 'params.yml'),
         '--outdir', str(outdir)
     ]
-    subprocess.check_call(cmd)
+    env = os.environ.copy()
+    env.setdefault('PYTHONPATH', '.')
+    subprocess.check_call(cmd, env=env)
     return outdir
 
 
