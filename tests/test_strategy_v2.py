@@ -1,6 +1,8 @@
 import json, subprocess, sys
 from pathlib import Path
-import yaml, pandas as pd
+
+import pandas as pd
+import yaml
 
 
 def _make_dummy(tmp: Path) -> Path:
