@@ -23,7 +23,7 @@ components:
       fast: 12
       slow: 26
       denoise: true
-    signal: 9      # <-- required key at components.signal.signal
+    signal: 9
     smoothing: { ema_span: 0 }
     weights: { macd: 0.6, ofi: 0.4 }
   regime:
@@ -35,16 +35,13 @@ components:
   gating:
     calibration:
       method: isotonic
-      target_pop: 0.72
-      p_thr: { trend: 0.82, range: 0.86 }
+      # target_pop: 0.72
+      # p_thr: { trend: 0.82, range: 0.86 }
     conviction:
-      persistence: { m: 5, k: 3 }
-      ev_gate:
-        mode: probability
-        ev_margin_bps: 6
-        delta_p_min: 0.02
-      hysteresis: { thr_entry: 0.88, thr_exit: 0.82 }
-      reentry_reset: { swing_lookback: 10, require_break_of_extreme: true }
+      # persistence: { m: 5, k: 3 }
+      # ev_gate: { mode: probability, ev_margin_bps: 6, delta_p_min: 0.02 }
+      # hysteresis: { thr_entry: 0.88, thr_exit: 0.82 }
+      # reentry_reset: { swing_lookback: 10, require_break_of_extreme: true }
   exits:
     mode: dynamic_atr
     atr:

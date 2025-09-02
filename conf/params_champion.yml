@@ -18,19 +18,17 @@ entry:
     m: 5
     k: 3
   ofi:
-    window: 5
+    ema_len: 10
+    align_window: 5
     align_ge: 3
+    conf_floor: 0.30   # 미달 시 소프트 페널티
   structure:
     avoid_in_box: true
 
 exit:
   tp_sl:
-    trend:
-      tp_bps: 38
-      sl_bps: 22
-    range:
-      tp_bps: 30
-      sl_bps: 20
+    trend: {mode: dyn_atr}
+    range: {mode: dyn_atr}
   min_hold: 8
   max_hold: 60
   be:
@@ -44,17 +42,6 @@ regime:
     atr_norm_on_1m: true
 
 session:
-  asia:
-    p_thr_adj: 0.00
-    exit_tp_adj_bps: 0
-    blacklist_windows: []
-  eu:
-    p_thr_adj: 0.01
-    exit_tp_adj_bps: -3
-    blacklist_windows: []
-  us:
-    p_thr_adj: 0.02
-    exit_tp_adj_bps: -5
-    blacklist_windows:
-      - "13:25-13:35"
-      - "20:55-21:05"
+  asia:  {p_thr_adj: 0.00, exit_tp_adj_bps: 0,   blacklist_windows: []}
+  eu:    {p_thr_adj: 0.01, exit_tp_adj_bps: -3,  blacklist_windows: []}
+  us:    {p_thr_adj: 0.02, exit_tp_adj_bps: -5,  blacklist_windows: ["13:25-13:35","20:55-21:05"]}

@@ -1,365 +1,349 @@
 # -*- coding: utf-8 -*-
-"""
-runner_patched.py — Strategy V2 wiring (Conviction Gate + EV + Rolling Balance + OFI)
-"""
+"""runner_patched.py — Strategy V2 wiring (OFI soft gate + dyn TP/SL)"""
 import os, sys, json, argparse, csv, math
 from pathlib import Path
 import yaml, pandas as pd, numpy as np
-from backtest.strategy_v2 import (passes_conviction, ConvictionParams, ConvictionState,
 
-                                  RollingBalance, RollingBalanceParams, approx_ofi, Frictions)
+from backtest.strategy_v2.conviction import passes_conviction, ConvictionParams, ConvictionState
+from backtest.strategy_v2.filters import ofi_conf_alignment, soft_gate_adjustments, _zscore, ensure_ofi_columns
+from backtest.strategy_v2.indicators import atr_1m, dyn_tp_sl_bps
+from backtest.strategy_v2.structure import prior_day_levels, value_area_approx
+from backtest.strategy_v2.costs import Frictions
+
 
 def expit(x):
-    import numpy as _np
-    return 1.0 / (1.0 + _np.exp(-x))
+  import numpy as _np
+  return 1.0 / (1.0 + _np.exp(-x))
 
-# --- PATCH: timestamp auto-normalization (injected) ---------------------------
+# --- PATCH: timestamp auto-normalization (retained) ---------------------------
 try:
-    import pandas as _pd
-    import numpy as _np
-    from pandas.api.types import is_numeric_dtype as _isnum
-    _orig_read_csv = _pd.read_csv
-    def _to_utc(series):
-        s = series
-        if _isnum(s):
-            x = s.dropna().astype("int64")
-            if len(x) > 0:
-                v = int(x.iloc[0]); digits = len(str(abs(v))) if v!=0 else 1
-                if digits >= 13: return _pd.to_datetime(s, unit="ms", utc=True, errors="coerce")
-                elif digits >= 10: return _pd.to_datetime(s, unit="s", utc=True, errors="coerce")
-        out = _pd.to_datetime(s, utc=True, errors="coerce")
-        if out.notna().any(): return out
-        for fmt in ("%Y-%m-%d %H:%M:%S","%Y/%m/%d %H:%M:%S","%Y-%m-%dT%H:%M:%S","%d-%m-%Y %H:%M:%S"):
-            try: return _pd.to_datetime(s, format=fmt, utc=True, errors="coerce")
-            except Exception: pass
-        return out
-    def _ensure_timestamp(df):
-        if "timestamp" in df.columns and df["timestamp"].notna().any():
-            return df
-        cands = [c for c in df.columns if str(c).lower() in ("timestamp","datetime","open_time","time_open","candle_begin_time","ts","t","date","time")]
-        order = ["timestamp","datetime","open_time","time_open","candle_begin_time","ts","t","date","time"]
-        cands.sort(key=lambda c: order.index(str(c).lower()) if str(c).lower() in order else 999)
-        for c in cands:
-            if str(c).lower() in ("date","time"):
-                continue
-            ts = _to_utc(df[c])
-            if ts.notna().any():
-                df["timestamp"] = ts
-                break
-        if "timestamp" not in df.columns or df["timestamp"].isna().all():
-            if "date" in df.columns and "time" in df.columns:
-                combo = df["date"].astype(str) + " " + df["time"].astype(str)
-                ts = _to_utc(combo)
-                if ts.notna().any():
-                    df["timestamp"] = ts
-        if "timestamp" in df.columns:
-            df.sort_values("timestamp", inplace=True, ignore_index=True)
-            df.drop_duplicates(subset=["timestamp"], keep="last", inplace=True)
-        return df
-    def _patched_read_csv(*args, **kwargs):
-        df = _orig_read_csv(*args, **kwargs)
-        try: df = _ensure_timestamp(df)
-        except Exception: pass
-        return df
-    if getattr(_pd.read_csv, "__name__", "") != "_patched_read_csv":
-        _pd.read_csv = _patched_read_csv
+  import pandas as _pd
+  import numpy as _np
+  from pandas.api.types import is_numeric_dtype as _isnum
+  _orig_read_csv = _pd.read_csv
+  def _to_utc(series):
+    s = series
+    if _isnum(s):
+      x = s.dropna().astype("int64")
+      if len(x) > 0:
+        v = int(x.iloc[0]); digits = len(str(abs(v))) if v!=0 else 1
+        if digits >= 13: return _pd.to_datetime(s, unit="ms", utc=True, errors="coerce")
+        elif digits >= 10: return _pd.to_datetime(s, unit="s", utc=True, errors="coerce")
+    out = _pd.to_datetime(s, utc=True, errors="coerce")
+    if out.notna().any(): return out
+    for fmt in ("%Y-%m-%d %H:%M:%S","%Y/%m/%d %H:%M:%S","%Y-%m-%dT%H:%M:%S","%d-%m-%Y %H:%M:%S"):
+      try: return _pd.to_datetime(s, format=fmt, utc=True, errors="coerce")
+      except Exception: pass
+    return out
+  def _ensure_timestamp(df):
+    if "timestamp" in df.columns and df["timestamp"].notna().any():
+      return df
+    cands = [c for c in df.columns if str(c).lower() in ("timestamp","datetime","open_time","time_open","candle_begin_time","ts","t","date","time")]
+    order = ["timestamp","datetime","open_time","time_open","candle_begin_time","ts","t","date","time"]
+    cands.sort(key=lambda c: order.index(str(c).lower()) if str(c).lower() in order else 999)
+    for c in cands:
+      if str(c).lower() in ("date","time"):
+        continue
+      ts = _to_utc(df[c])
+      if ts.notna().any():
+        df["timestamp"] = ts
+        break
+    if "timestamp" not in df.columns or df["timestamp"].isna().all():
+      if "date" in df.columns and "time" in df.columns:
+        combo = df["date"].astype(str) + " " + df["time"].astype(str)
+        ts = _to_utc(combo)
+        if ts.notna().any():
+          df["timestamp"] = ts
+    if "timestamp" in df.columns:
+      df.sort_values("timestamp", inplace=True, ignore_index=True)
+      df.drop_duplicates(subset=["timestamp"], keep="last", inplace=True)
+    return df
+  def _patched_read_csv(*args, **kwargs):
+    df = _orig_read_csv(*args, **kwargs)
+    try: df = _ensure_timestamp(df)
+    except Exception: pass
+    return df
+  if getattr(_pd.read_csv, "__name__", "") != "_patched_read_csv":
+    _pd.read_csv = _patched_read_csv
 except Exception:
-    pass
+  pass
 # --- END PATCH ----------------------------------------------------------------
 
+
 def load_yaml(p):
-    with open(p, 'r', encoding='utf-8') as f: return yaml.safe_load(f)
-def true_range(h, l, pc): return max(h-l, abs(h-pc), abs(l-pc))
+  with open(p, 'r', encoding='utf-8') as f:
+    return yaml.safe_load(f)
+
+
+def true_range(h, l, pc):
+  return max(h - l, abs(h - pc), abs(l - pc))
+
+
+def tag_session(ts_utc) -> str:
+  h = ts_utc.hour
+  if 0 <= h < 8:
+    return "ASIA"
+  if 8 <= h < 16:
+    return "EU"
+  return "US"
+
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--data-root', required=True)
-    ap.add_argument('--csv-glob', required=True)
-    ap.add_argument('--params', required=True)
-    ap.add_argument('--outdir', required=True)
-    ap.add_argument('--calibrator', default=None, help='optional isotonic calibrator JSON')
-    args = ap.parse_args()
+  ap = argparse.ArgumentParser()
+  ap.add_argument('--data-root', required=True)
+  ap.add_argument('--csv-glob', required=True)
+  ap.add_argument('--params', required=True)
+  ap.add_argument('--outdir', required=True)
+  ap.add_argument('--calibrator', default=None)
+  args = ap.parse_args()
 
-    repo_root = Path('.').resolve()
-    spec = load_yaml(repo_root/'specs'/'strategy_v2_spec.yml')
-    os.makedirs(args.outdir, exist_ok=True)
+  params = load_yaml(args.params)
 
-    params = load_yaml(args.params)
-    exits = spec.get('components',{}).get('exits',{})
-    costs = spec.get('components',{}).get('costs',{})
-    for k,v in exits.items(): params.setdefault('exit',{}).setdefault(k,v)
-    for k,v in costs.items(): params.setdefault('meta',{}).setdefault(k,v if isinstance(v,(int,float)) else v)
+  paths = sorted(Path(args.data_root).glob(args.csv_glob))
+  if not paths:
+    raise SystemExit('no data files')
+  df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
+  df.rename(columns={'timestamp': 'open_time'}, inplace=True)
+  df = ensure_ofi_columns(df)
 
-    rbp = RollingBalanceParams(win=spec['components']['structure']['rolling_balance_avoid']['win_min'],
-                               tr_pctl_max=spec['components']['structure']['rolling_balance_avoid']['tr_pctl_max'])
-    rb = RollingBalance(rbp)
-    ofi_lb = spec['components']['orderflow']['ofi_align']['lookback']
+  # MACD
+  fast, slow, sig = 12, 26, 9
+  ema_fast = df['close'].ewm(span=fast, adjust=False).mean()
+  ema_slow = df['close'].ewm(span=slow, adjust=False).mean()
+  macd = ema_fast - ema_slow
+  macd_sig = macd.ewm(span=sig, adjust=False).mean()
+  macd_hist = macd - macd_sig
+  df['macd_hist'] = macd_hist
+  dir_hint = np.sign(macd_hist).astype(int)
 
-    fr = Frictions(fee_bps_per_side=params['meta'].get('fee_bps_per_side',5),
-                   slippage_bps_per_side=params['meta'].get('slippage_bps_per_side',2),
-                   funding_bps_estimate=params['meta'].get('funding_bps_estimate',0.5))
-    frictions_bps = fr.per_roundtrip()
-
-    conv = spec['components']['gating']['conviction']
-    ev_gate_cfg = conv.get('ev_gate', {})
-    gate = ConvictionParams(m=conv['persistence']['m'], k=conv['persistence']['k'],
-                            thr_entry=conv['hysteresis']['thr_entry'],
-                            thr_exit=conv['hysteresis']['thr_exit'],
-                            alpha_cost=ev_gate_cfg.get('alpha_cost', 0.0))
-    ev_margin = ev_gate_cfg.get('ev_margin_bps', 0.0)
-    delta_p_min = ev_gate_cfg.get('delta_p_min', 0.0)
-    state = ConvictionState()
-    calibrator = None
-    if args.calibrator and Path(args.calibrator).exists():
-        try:
-            with open(args.calibrator, 'r', encoding='utf-8') as f:
-                cal = json.load(f)
-            xs = np.array(cal.get('X_', cal.get('x', [])), dtype=float)
-            ys = np.array(cal.get('y_', cal.get('y', [])), dtype=float)
-            if len(xs) and len(ys):
-                def _calib(x):
-                    return np.interp(x, xs, ys, left=ys[0], right=ys[-1])
-                calibrator = _calib
-        except Exception:
-            calibrator = None
-
-    import glob
-    matches = []
-    for p in glob.glob(str(Path(args.data_root)/'**'/'*.csv'), recursive=True):
-        if glob.fnmatch.fnmatch(p, str(Path(args.data_root)/args.csv_glob)):
-            matches.append(p)
-    if not matches: raise SystemExit(f"No CSV matched: {args.csv_glob}")
-    csv_path = matches[0]
-
-    df = pd.read_csv(csv_path)
-    req = ['open','high','low','close','volume']
-    for col in req:
-        if col not in df.columns: raise SystemExit(f"Missing column: {col}")
-    tcol = 'timestamp' if 'timestamp' in df.columns else ('datetime' if 'datetime' in df.columns else None)
-    if tcol is None: raise SystemExit("Need timestamp/datetime column")
-    df[tcol] = pd.to_datetime(df[tcol], utc=True, errors='coerce')
-    df = df.sort_values(tcol).reset_index(drop=True)
-
-    # MACD proxy (until model p_hat provided)
-    fast=spec['components']['signal']['macd']['fast']
-    slow=spec['components']['signal']['macd']['slow']
-    signal=spec['components']['signal']['signal']
-    ema_fast = df['close'].ewm(span=fast, adjust=False).mean()
-    ema_slow = df['close'].ewm(span=slow, adjust=False).mean()
-    macd = ema_fast - ema_slow
-    macd_signal = macd.ewm(span=signal, adjust=False).mean()
-    macd_diff = macd - macd_signal
-    dir_hint = np.sign(macd_diff).astype(int)
-
-    # Features
-    tr_list, in_box_list, tr_pctl_list = [], [], []
-    prev_close = float(df['close'].iloc[0])
-    for h,l,c,o,v in zip(df['high'],df['low'],df['close'],df['open'],df['volume']):
-        rb.update(float(h), float(l), float(prev_close))
-        tr_val = true_range(float(h),float(l),float(prev_close))
-        tr_list.append(tr_val)
-        s = sorted(rb.buffer)
-        if s:
-            idx = max(0, min(len(s)-1, (rbp.tr_pctl_max*len(s))//100))
-            thr = s[idx]
-            in_box = rb.buffer[-1] <= thr
-            pctl = (np.searchsorted(s, rb.buffer[-1], side='right')/len(s))*100.0
-        else:
-            in_box, pctl = False, 100.0
-        in_box_list.append(in_box)
-        tr_pctl_list.append(pctl)
-        prev_close = float(c)
-    df['tr'] = tr_list
-    df['in_box'] = in_box_list
-    df['tr_pctl'] = tr_pctl_list
-    ofi_window = params['entry']['ofi']['window']
-    align_ge = params['entry']['ofi']['align_ge']
-    df['ofi'] = approx_ofi(df, window=ofi_window, align_ge=align_ge)
-
-    # Persistence
-    m = gate.m
-    aligned = (np.sign(macd_diff)==np.sign(pd.Series(macd_diff).shift(1))).astype(int)
-    aligned = pd.Series(aligned).rolling(m).sum().fillna(0).astype(int)
-
-    # Probability
-    weights = spec['components']['signal'].get('weights', {'macd':0.6,'ofi':0.4})
-    w_macd, w_ofi = float(weights.get('macd',0.6)), float(weights.get('ofi',0.4))
-    macd_z = (macd_diff - pd.Series(macd_diff).rolling(100, min_periods=10).mean()) / \
-             (pd.Series(macd_diff).rolling(100, min_periods=10).std() + 1e-9)
-    ofi_z  = (df['ofi']    - pd.Series(df['ofi']).rolling(100, min_periods=10).mean()) / \
-             (pd.Series(df['ofi']).rolling(100, min_periods=10).std()  + 1e-9)
-    score = (w_macd * macd_z.fillna(0.0)) + (w_ofi * ofi_z.fillna(0.0))
-    beta0, beta1 = 0.0, 0.8
-    p_raw = expit(beta0 + beta1 * score.values)
-    if 'p_hat_calibrated' in df.columns:
-        p_trend = df['p_hat_calibrated'].astype(float).clip(0,1).values
+  # Rolling balance
+  rb_win = params['regime']['detector']['donchian_len']
+  rb_buf = []
+  in_box_list, tr_pctl_list, tr_list = [], [], []
+  prev_close = float(df['close'].iloc[0])
+  for h, l, c in zip(df['high'], df['low'], df['close']):
+    tr = true_range(float(h), float(l), prev_close)
+    rb_buf.append(tr)
+    if len(rb_buf) > rb_win:
+      rb_buf.pop(0)
+    s = sorted(rb_buf)
+    if s:
+      idx = int(0.25 * len(s))
+      thr = s[idx]
+      in_box = tr <= thr
+      pctl = np.searchsorted(s, tr, side='right') / len(s) * 100.0
     else:
-        p_trend = p_raw
-        if args.calibrator and Path(args.calibrator).exists():
-            try:
-                with open(args.calibrator,'r') as f: cal=json.load(f)
-                xs = np.array(cal.get('maps',{}).get('_default',{}).get('x',[]), dtype=float)
-                ys = np.array(cal.get('maps',{}).get('_default',{}).get('y',[]), dtype=float)
-                if xs.size and ys.size:
-                    p_trend = np.clip(np.interp(p_trend, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
-            except Exception:
-                pass
-        bins_path = Path('conf/calibrator_bins.json')
-        if bins_path.exists():
-            try:
-                cal = json.load(open(bins_path,'r'))
-                xs = np.array([pt['x'] for pt in cal], dtype=float)
-                ys = np.array([pt['y'] for pt in cal], dtype=float)
-                if xs.size and ys.size:
-                    p_trend = np.clip(np.interp(p_trend, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
-            except Exception:
-                pass
-    ema_span = int(spec['components']['signal'].get('smoothing',{}).get('ema_span', 0) or 0)
-    if ema_span > 0:
-        p_trend = pd.Series(p_trend).ewm(span=min(ema_span,3), adjust=False).mean().clip(0,1).values
-    df['p_trend'] = p_trend
-    df['ofi_z'] = ofi_z.fillna(0.0).values
+      in_box, pctl = False, 100.0
+    in_box_list.append(in_box)
+    tr_pctl_list.append(pctl)
+    tr_list.append(tr)
+    prev_close = float(c)
+  df['tr'] = tr_list
+  df['in_box'] = in_box_list
+  df['tr_pctl'] = tr_pctl_list
 
-    # Regime
-    atr_n = spec['components']['regime']['atr']['n']
-    tr = pd.Series(df['tr']).rolling(atr_n).mean()
-    z = (tr - tr.rolling(atr_n*5,min_periods=atr_n).mean())/(tr.rolling(atr_n*5,min_periods=atr_n).std()+1e-12)
-    regime = np.where(z >= spec['components']['regime']['atr']['z_trend_min'], 'trend', 'range')
+  # OFI features
+  ofi_feats = ofi_conf_alignment(df,
+                                params['entry']['ofi']['ema_len'],
+                                params['entry']['ofi']['align_window'],
+                                params['entry']['ofi']['align_ge'])
+  df = pd.concat([df, ofi_feats], axis=1)
+  ofi_z = _zscore(ofi_feats['OFI_smooth']).fillna(0.0)
 
-    thr_trend = spec['components']['gating']['calibration']['p_thr']['trend']
-    thr_range = spec['components']['gating']['calibration']['p_thr']['range']
+  # Probability model
+  weights = {'macd': 0.6, 'ofi': 0.4}
+  score = weights['macd'] * _zscore(macd_hist).fillna(0.0) + weights['ofi'] * ofi_z
+  p_raw_arr = expit(0.8 * score + 0.0)
+  df['p_raw'] = p_raw_arr
 
-    ex_mode = params['exit'].get('mode', 'fixed')
-    min_hold = params['exit'].get('min_hold', 8); max_hold = params['exit'].get('max_hold', 60)
-    be_bps = params['exit'].get('breakeven_bps', 7)
-    if ex_mode == 'dynamic_atr':
-        atr_cfg = params['exit'].get('atr', {})
-        atr_n_exit = atr_cfg.get('n', 14)
-        atr_series_exit = pd.Series(df['tr']).rolling(atr_n_exit).mean()
-        atr_bps = (atr_series_exit / df['close']).fillna(0)*10000
-        tp_mult = atr_cfg.get('tp_mult', {})
-        sl_mult = atr_cfg.get('sl_mult', {})
-        cap = atr_cfg.get('cap_bps', {})
-        loop_start = max(atr_n, m, atr_n_exit)+1
+  # Regime detection
+  atr_n = params['regime']['detector']['atr_len']
+  tr = pd.Series(df['tr']).rolling(atr_n).mean()
+  z = (tr - tr.rolling(atr_n*5, min_periods=atr_n).mean()) / (tr.rolling(atr_n*5, min_periods=atr_n).std() + 1e-9)
+  regime = np.where(z >= 0.5, 'trend', 'range')
+
+  # Structure levels
+  struct = prior_day_levels(df)
+  va = value_area_approx(df)
+  df = pd.concat([df, struct, va], axis=1)
+
+  thr_trend = params['entry']['p_thr']['trend']
+  thr_range = params['entry']['p_thr']['range']
+
+  gate = ConvictionParams(m=params['entry']['persistence']['m'],
+                          k=params['entry']['persistence']['k'],
+                          thr_entry=params['entry']['hysteresis']['thr_entry'],
+                          thr_exit=params['entry']['hysteresis']['thr_exit'],
+                          alpha_cost=0.0)
+  state = ConvictionState()
+
+  fr = Frictions(fee_bps_per_side=params['meta']['fee_bps_side'],
+                 slippage_bps_per_side=params['meta']['slip_bps_side'],
+                 funding_bps_estimate=params['meta']['funding_bps_rt'])
+  frictions_bps = 2*fr.fee_bps_per_side + 2*fr.slippage_bps_per_side + fr.funding_bps_estimate
+
+  calibrator = None
+  if args.calibrator and Path(args.calibrator).exists():
+    cal = json.load(open(args.calibrator, 'r', encoding='utf-8'))
+    calibrator = {'maps': {}}
+    for k, v in cal.get('maps', {}).items():
+      xs = np.array(v.get('x', v.get('X_', [])), dtype=float)
+      ys = np.array(v.get('y', v.get('y_', [])), dtype=float)
+      if xs.size and ys.size:
+        calibrator['maps'][k] = lambda x, xs=xs, ys=ys: np.interp(x, xs, ys, left=ys[0], right=ys[-1])
+
+  min_hold = params['exit']['min_hold']
+  max_hold = params['exit']['max_hold']
+
+  position = 0
+  entry_px = 0.0
+  entry_idx = -1
+  entry_session = ''
+  entry_regime = ''
+  be_armed = False
+  trades = []
+  gating_dbg = []
+  tp_bps_cur = 0.0
+  sl_bps_cur = 0.0
+
+  for i in range(max(atr_n, gate.m)+1, len(df)):
+    now_ts = pd.to_datetime(df['open_time'].iloc[i], utc=True)
+    session = tag_session(now_ts)
+    reg = regime[i]
+    side = int(np.sign(dir_hint[i]))
+    p_raw = float(p_raw_arr[i])
+    if calibrator:
+      gk = f"{session}_{reg}"
+      if gk in calibrator['maps']:
+        pop = float(calibrator['maps'][gk](p_raw))
+      elif '_default' in calibrator['maps']:
+        pop = float(calibrator['maps']['_default'](p_raw))
+      else:
+        pop = p_raw
     else:
-        tp_bps = params['exit'].get('tp_bps', 38)
-        sl_bps = params['exit'].get('sl_bps', 22)
-        loop_start = max(atr_n, m)+1
+      pop = p_raw
 
-    position, entry_px, entry_idx = 0, 0.0, -1
-    be_armed = False
-    trades, gating_dbg = [], []
-    tp_bps_cur = 0.0
-    sl_bps_cur = 0.0
-
-    def calc_ev(pop, tp, sl): return pop*tp - (1.0-pop)*sl - frictions_bps
-
-    for i in range(loop_start, len(df)):
-        side = int(np.sign(dir_hint[i])); pop = float(p_trend[i])
-        thr = thr_trend if regime[i]=='trend' else thr_range
-        mom_k = int(aligned.iloc[i])
-        in_box = bool(df['in_box'].iloc[i])
-        tr_pctl = float(df['tr_pctl'].iloc[i])
-        z_min = float(spec['components']['orderflow']['ofi_align'].get('z_min', 0.0))
-        ofi_dir_ok = (int(np.sign(df['ofi'].iloc[max(0,i-ofi_lb):i].sum())) == side) if side!=0 else False
-        ofi_mag_ok = (float(df['ofi_z'].iloc[i]) >= z_min) if side!=0 else False
-        ofi_ok = ofi_dir_ok and ofi_mag_ok
-
-        if ex_mode == 'dynamic_atr':
-            atr_val = float(atr_bps.iloc[i])
-            tp_bps_i = float(np.clip(atr_val * tp_mult.get(regime[i],1.0), cap.get('tp_min',0), cap.get('tp_max',1e9)))
-            sl_bps_i = float(np.clip(atr_val * sl_mult.get(regime[i],1.0), cap.get('sl_min',0), cap.get('sl_max',1e9)))
-        else:
-            tp_bps_i = tp_bps
-            sl_bps_i = sl_bps
-        ev_bps = calc_ev(pop, tp_bps_i, sl_bps_i)
-
-        p_ev_req = np.clip((sl_bps_i + frictions_bps + float(ev_margin)) / (tp_bps_i + sl_bps_i + 1e-9), 0.0, 0.999999)
-        passed_ev = (pop >= p_ev_req) and ((pop - p_ev_req) >= delta_p_min)
-
-        passed_calib = pop >= thr
-        passed_persist = mom_k >= gate.k
-        dbg = {"i":i,"side":side,"pop":pop,"thr":thr,
-               "passed_calib":bool(passed_calib),"mom_k_of_m":mom_k,
-               "passed_persist":bool(passed_persist),"ev_bps":ev_bps,
-               "passed_ev":bool(passed_ev),"in_box":bool(in_box),
-               "tr_pctl":tr_pctl,"ofi_ok":bool(ofi_ok),
-               "tp_bps_i":tp_bps_i,"sl_bps_i":sl_bps_i,
-               "p_ev_req":p_ev_req,"regime":regime[i],"be_armed":bool(be_armed)}
-
-        if position==0:
-            decision = passed_calib and passed_persist and passed_ev and (not in_box) and ofi_ok and side!=0
-            if decision:
-                position = side; state.last_side = side
-                entry_px = float(df['close'].iloc[i]); entry_idx = i
-                tp_bps_cur = tp_bps_i; sl_bps_cur = sl_bps_i
-                be_armed = False
-                dbg["decision"] = "enter"
-            else:
-                dbg["decision"] = "reject"
-        else:
-            held = i - entry_idx
-            pnl_bps = (float(df['close'].iloc[i]) / entry_px - 1.0) * (10000.0) * position
-            if not be_armed and pnl_bps >= be_bps:
-                be_armed = True
-            hit_tp = pnl_bps >= tp_bps_cur
-            hit_sl = pnl_bps <= (0 if be_armed else -sl_bps_cur)
-            time_exit = held >= max_hold
-            if hit_tp or hit_sl or time_exit or (held < min_hold and hit_sl):
-                trades.append({"entry_idx":entry_idx,"exit_idx":i,"side":position,
-                               "entry_px":entry_px,"exit_px":float(df['close'].iloc[i]),"pnl_bps":pnl_bps})
-                position, entry_idx, entry_px = 0, -1, 0.0
-                dbg["decision"] = "exit"
-            else:
-                dbg["decision"] = "hold"
-            dbg["be_armed"] = bool(be_armed)
-        gating_dbg.append(dbg)
-
-    # Metrics
-    actual = np.sign(df['close'].shift(-1) - df['close']).fillna(0).values
-    pred = np.sign(p_trend - 0.5)
-    tp = int(((pred==1)&(actual==1)).sum()); tn = int(((pred==-1)&(actual==-1)).sum())
-    fp = int(((pred==1)&(actual==-1)).sum()); fn = int(((pred==-1)&(actual==1)).sum())
-    denom = math.sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
-    mcc = float((tp*tn - fp*fn)/denom) if denom>0 else 0.0
-
-    if trades:
-        pnl = np.array([t["pnl_bps"] for t in trades])
-        hit_rate = float((pnl>0).mean()) if len(pnl)>0 else 0.0
-        summary = {"n_trades": int(len(trades)), "hit_rate": hit_rate, "mcc": mcc, "cum_pnl_bps": float(pnl.sum())}
+    ofi_row = ofi_feats.iloc[i]
+    ofi_adj = soft_gate_adjustments(float(ofi_row['OFI_conf']), params['entry']['ofi']['conf_floor'])
+    thr = (thr_trend if reg=='trend' else thr_range) + ofi_adj['thr_add'] + params['session'].get(session.lower(), {}).get('p_thr_adj', 0.0)
+    close = df['close'].iloc[i]
+    struct_pen = 0.0
+    if reg == 'trend':
+      if not ((close > df['PDH'].iloc[i]) or (close > df['VAH'].iloc[i])):
+        struct_pen = 0.01
     else:
-        summary = {"n_trades": 0, "hit_rate": 0.0, "mcc": mcc, "cum_pnl_bps": 0.0}
+      val = df['VAL'].iloc[i]; vah = df['VAH'].iloc[i]
+      if not (abs(close-val)/close < 0.001 or abs(close-vah)/close < 0.001):
+        struct_pen = 0.01
+    thr += struct_pen
 
-    try:
-        entry_idxs = [t["entry_idx"] for t in trades]
-        ent = pd.DataFrame({
-            "p": [float(p_trend[i]) for i in entry_idxs],
-            "p_ev_req": [float(p_ev_req) if 'p_ev_req' in locals() else np.nan for _ in entry_idxs]
-        })
-        bins = np.linspace(0,1,21)
-        ent['bin'] = pd.cut(ent['p'], bins, include_lowest=True, right=True)
-        rel = ent.groupby('bin')['p'].agg(['count','mean']).reset_index().rename(columns={'mean':'p_bin_mean'})
-        with open(Path(args.outdir)/"calibration_report.json","w") as f:
-            json.dump({"reliability": rel.to_dict(orient="list")}, f, indent=2)
-    except Exception:
-        pass
+    atr_bps = float(atr_1m(df.iloc[:i+1], atr_n).iloc[-1])
+    tp_bps_i, sl_bps_i = dyn_tp_sl_bps(reg, atr_bps,
+                                       params['session'].get(session.lower(), {}).get('exit_tp_adj_bps', 0),
+                                       ofi_adj['tp_scale'])
+    ev = pop * tp_bps_i - (1.0 - pop) * sl_bps_i - frictions_bps - (ofi_adj['pev_add'] * 100.0)
+    passed_ev = ev >= 0.0
 
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-    # trades
-    with open(outdir/"trades.csv","w",newline="",encoding="utf-8") as f:
-        fn = list(trades[0].keys()) if trades else ["entry_idx","exit_idx","side","entry_px","exit_px","pnl_bps"]
-        w = csv.DictWriter(f, fieldnames=fn); w.writeheader()
-        for t in trades: w.writerow(t)
-    # gating debug
-    with open(outdir/"gating_debug.json","w",encoding="utf-8") as f:
-        json.dump(gating_dbg, f, ensure_ascii=False, indent=2)
-    # preds_test (audit)
-    audit = pd.DataFrame({tcol: df[tcol], "p_trend": p_trend, "ofi": df["ofi"], "macd_hist": macd_diff})
-    audit.to_csv(outdir/"preds_test.csv", index=False)
-    # summary
-    with open(outdir/"summary.json","w",encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
+    mom_k = int((np.sign(macd_hist.values[i-gate.m+1:i+1]) == np.sign(macd_hist.values[i-gate.m:i])).sum())
+    passed_persist = mom_k >= gate.k
+    passed_calib = pop >= thr
+    in_box = bool(df['in_box'].iloc[i])
+    ofi_dir_ok = int(ofi_row['OFI_dir_ok'])
 
-if __name__=="__main__":
-    main()
+    dbg = {
+      'i': i,
+      'side': side,
+      'session': session,
+      'regime': reg,
+      'pop': float(pop),
+      'thr': float(thr),
+      'tp_bps_i': float(tp_bps_i),
+      'sl_bps_i': float(sl_bps_i),
+      'frictions_bps': float(frictions_bps),
+      'EV': float(ev),
+      'OFI_conf': float(ofi_row['OFI_conf']),
+      'OFI_align': float(ofi_row['OFI_align']),
+      'OFI_dir_ok': int(ofi_row['OFI_dir_ok']), 'passed_ev': bool(passed_ev)
+    }
+
+    if side == -1:
+      dbg['decision'] = 'reject'
+      gating_dbg.append(dbg)
+      continue
+
+    if position == 0:
+      decision = passed_calib and passed_persist and passed_ev and (not in_box) and ofi_dir_ok
+      if decision:
+        position = side
+        entry_px = float(df['close'].iloc[i])
+        entry_idx = i
+        entry_session = session
+        entry_regime = reg
+        tp_bps_cur = tp_bps_i
+        sl_bps_cur = sl_bps_i
+        be_armed = False
+        dbg['decision'] = 'enter'
+      else:
+        dbg['decision'] = 'reject'
+    else:
+      bars_held = i - entry_idx
+      pnl_bps = (float(df['close'].iloc[i]) / entry_px - 1.0) * 10000.0 * position
+      if not be_armed and bars_held >= params['exit']['be']['arm_after_bars'] and pnl_bps >= params['exit']['be']['arm_trigger_bps']:
+        be_armed = True
+      hit_tp = pnl_bps >= tp_bps_cur
+      hit_sl = pnl_bps <= (0 if be_armed else -sl_bps_cur)
+      time_exit = bars_held >= max_hold
+      if hit_tp or hit_sl or time_exit:
+        if bars_held >= min_hold:
+          trades.append({
+            'entry_idx': entry_idx,
+            'exit_idx': i,
+            'side': position,
+            'entry_px': entry_px,
+            'exit_px': float(df['close'].iloc[i]),
+            'pnl_bps': pnl_bps,
+            'bars_held': bars_held,
+            'session': entry_session,
+            'regime': entry_regime
+          })
+          position = 0
+          entry_idx = -1
+          entry_px = 0.0
+          dbg['decision'] = 'exit'
+        else:
+          dbg['decision'] = 'hold'
+      else:
+        dbg['decision'] = 'hold'
+      dbg['be_armed'] = bool(be_armed)
+    gating_dbg.append(dbg)
+
+  # Metrics
+  actual = np.sign(df['close'].shift(-1) - df['close']).fillna(0).values
+  pred = np.sign(p_raw_arr - 0.5)
+  tp = int(((pred==1)&(actual==1)).sum()); tn = int(((pred==-1)&(actual==-1)).sum())
+  fp = int(((pred==1)&(actual==-1)).sum()); fn = int(((pred==-1)&(actual==1)).sum())
+  denom = math.sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
+  mcc = float((tp*tn - fp*fn)/denom) if denom>0 else 0.0
+
+  if trades:
+    pnl = np.array([t['pnl_bps'] for t in trades])
+    hit_rate = float((pnl>0).mean()) if len(pnl)>0 else 0.0
+    summary = {'n_trades': int(len(trades)), 'hit_rate': hit_rate, 'mcc': mcc, 'cum_pnl_bps': float(pnl.sum())}
+  else:
+    summary = {'n_trades': 0, 'hit_rate': 0.0, 'mcc': mcc, 'cum_pnl_bps': 0.0}
+
+  outdir = Path(args.outdir)
+  outdir.mkdir(parents=True, exist_ok=True)
+  with open(outdir/'trades.csv','w',newline='',encoding='utf-8') as f:
+    fn = list(trades[0].keys()) if trades else ['entry_idx','exit_idx','side','entry_px','exit_px','pnl_bps','bars_held','session','regime']
+    w = csv.DictWriter(f, fieldnames=fn); w.writeheader()
+    for t in trades: w.writerow(t)
+  with open(outdir/'gating_debug.json','w',encoding='utf-8') as f:
+    json.dump(gating_dbg, f, ensure_ascii=False, indent=2)
+  audit = pd.DataFrame({'open_time': df['open_time'], 'p_raw': p_raw_arr, 'p_trend': p_raw_arr, 'macd_hist': macd_hist, 'session': [tag_session(pd.to_datetime(t, utc=True)) for t in df['open_time']], 'regime': regime, 'label': (df['close'].shift(-1) > df['close']).astype(int)})
+  audit.to_csv(outdir/'preds_test.csv', index=False)
+  with open(outdir/'summary.json','w',encoding='utf-8') as f:
+    json.dump(summary, f, ensure_ascii=False, indent=2)
+
+if __name__ == '__main__':
+  main()

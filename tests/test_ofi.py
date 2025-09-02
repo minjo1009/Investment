@@ -1,9 +1,8 @@
 import numpy as np
 import pandas as pd
 import pytest
-from pathlib import Path
 
-from backtest.strategy_v2.filters import compute_bvr_ofi, ofi_conf_alignment
+from backtest.strategy_v2.filters import ofi_conf_alignment
 
 
 @pytest.fixture
@@ -20,8 +19,7 @@ def df_eth_1m():
   })
 
 
-def test_ofi_features(df_eth_1m):
-  feats = compute_bvr_ofi(df_eth_1m)
-  assert set(['BVR','OFI']).issubset(feats.columns)
-  aligned = ofi_conf_alignment(df_eth_1m)
-  assert 'OFI_conf' in aligned.columns
+def test_ofi_conf_has_range(df_eth_1m):
+  f = ofi_conf_alignment(df_eth_1m)
+  assert f['OFI_conf'].notna().any()
+  assert (f['OFI_conf'] >= 0).all()

@@ -54,11 +54,13 @@ def _run(tmp: Path) -> Path:
 
 
 @pytest.fixture
-def sim_trades(tmp_path: Path):
+def trades_df(tmp_path: Path):
   outdir = _run(tmp_path)
   return pd.read_csv(outdir / 'trades.csv')
 
 
-def test_min_hold_never_violated(sim_trades):
-  if 'bars_held' in sim_trades.columns:
-    assert (sim_trades['bars_held'] >= 8).all()
+def test_min_hold_enforced(trades_df):
+  assert (trades_df['bars_held'] >= 8).all()
+
+def test_no_shorts(trades_df):
+  assert (trades_df['side'] != -1).all()
