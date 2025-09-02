@@ -2,7 +2,44 @@
 """runner_patched.py — Strategy V2 wiring (OFI soft gate + dyn TP/SL)"""
 import os, sys, json, argparse, csv, math
 from pathlib import Path
-import yaml, pandas as pd, numpy as np
+import numpy as np
+import pandas as pd
+import yaml
+from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
+
+
+def normalize_open_time(df: pd.DataFrame) -> pd.DataFrame:
+  """Vectorized conversion of ``open_time`` to UTC timestamps.
+
+  Numeric columns are treated as epoch milliseconds. String numbers are cast
+  to integers and parsed as epoch milliseconds. Date strings attempt explicit
+  formats before a final fallback. Conversion runs once right after load and
+  row-wise ``to_datetime`` calls inside loops are forbidden.
+  """
+  s = df["open_time"]
+  if is_datetime64_any_dtype(s):
+    try:
+      if getattr(s.dt.tz, "zone", None) == "UTC":
+        return df
+    except Exception:
+      pass
+  if is_numeric_dtype(s):
+    df["open_time"] = pd.to_datetime(s.astype("int64"), unit="ms", utc=True)
+    return df
+  ss = s.astype(str)
+  sample = ss.dropna().head(200)
+  if sample.str.fullmatch(r"\d{12,}").mean() > 0.8:
+    df["open_time"] = pd.to_datetime(ss.astype("int64"), unit="ms", utc=True)
+    return df
+  for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+              "%Y-%m-%d %H:%M:%S%z", "%Y-%m-%dT%H:%M:%S%z"):
+    try:
+      df["open_time"] = pd.to_datetime(ss, format=fmt, utc=True, errors="raise")
+      return df
+    except Exception:
+      continue
+  df["open_time"] = pd.to_datetime(ss, utc=True, errors="coerce")
+  return df
 
 from backtest.strategy_v2.conviction import passes_conviction, ConvictionParams, ConvictionState
 from backtest.strategy_v2.filters import ofi_conf_alignment, soft_gate_adjustments, _zscore, ensure_ofi_columns
@@ -146,6 +183,8 @@ def main():
   df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
   df.rename(columns={'timestamp': 'open_time'}, inplace=True)
   df = ensure_ofi_columns(df)
+  # open_time to UTC Timestamp conversion (vectorized)
+  df = normalize_open_time(df)
 
   # MACD
   fast, slow, sig = 12, 26, 9
@@ -248,12 +287,8 @@ def main():
   sl_bps_cur = 0.0
 
   for i in range(max(atr_n, gate.m)+1, len(df)):
-    # ``pd.to_datetime`` may return a ``Series`` if fed a sequence-like input.
-    # Ensure ``now_ts`` is always a scalar ``Timestamp`` to keep downstream
-    # logic simple.
-    now_ts = pd.to_datetime(df['open_time'].iloc[i], utc=True)
-    if isinstance(now_ts, pd.Series):
-      now_ts = now_ts.iloc[0]
+    # normalize_open_time ensures a scalar tz-aware Timestamp
+    now_ts = df['open_time'].iloc[i]
     session = tag_session(now_ts)
     reg = regime[i]
     side = int(np.sign(dir_hint[i]))
@@ -386,7 +421,7 @@ def main():
     for t in trades: w.writerow(t)
   with open(outdir/'gating_debug.json','w',encoding='utf-8') as f:
     json.dump(gating_dbg, f, ensure_ascii=False, indent=2)
-  audit = pd.DataFrame({'open_time': df['open_time'], 'p_raw': p_raw_arr, 'p_trend': p_raw_arr, 'macd_hist': macd_hist, 'session': [tag_session(pd.to_datetime(t, utc=True)) for t in df['open_time']], 'regime': regime, 'label': (df['close'].shift(-1) > df['close']).astype(int)})
+  audit = pd.DataFrame({'open_time': df['open_time'], 'p_raw': p_raw_arr, 'p_trend': p_raw_arr, 'macd_hist': macd_hist, 'session': [tag_session(t) for t in df['open_time']], 'regime': regime, 'label': (df['close'].shift(-1) > df['close']).astype(int)})
   audit.to_csv(outdir/'preds_test.csv', index=False)
   with open(outdir/'summary.json','w',encoding='utf-8') as f:
     json.dump(summary, f, ensure_ascii=False, indent=2)
