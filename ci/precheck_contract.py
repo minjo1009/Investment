@@ -16,10 +16,22 @@ def check_data(root, pattern):
 def check_trades(outdir):
     p=os.path.join(outdir,"trades.csv")
     if not _exists(p): return WARN,"trades.csv missing"
-    df=pd.read_csv(p,nrows=10)
+    df=pd.read_csv(p,nrows=100)
     cols={c.lower() for c in df.columns}
     need={"open_time","event"}
     if not need.issubset(cols): return FAIL,f"trades miss: need {need}, have={cols}"
+    if "session_tag" not in cols:
+        col=next((c for c in df.columns if c.lower()=="open_time"),None)
+        ts=pd.to_datetime(df[col],utc=True,errors="coerce") if col else pd.Series(dtype="datetime64[ns, UTC]")
+        hrs=ts.dt.hour
+        tag=pd.Series("US",index=ts.index)
+        tag.loc[hrs<8]="ASIA"
+        tag.loc[(hrs>=8)&(hrs<16)]="EU"
+        print("[precheck] session_tag generated",sorted(tag.unique()))
+    cost_fields={"fee_bps_per_side","slip_bps_per_side","funding_bps_rt"}
+    missing=[c for c in cost_fields if c not in cols]
+    if missing:
+        print(f"[precheck] WARN missing cost fields: {missing}")
     return OK,"trades_ok"
 
 def check_preds(outdir):

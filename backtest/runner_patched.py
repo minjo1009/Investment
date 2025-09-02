@@ -152,13 +152,12 @@ def main():
     dir_hint = np.sign(macd_diff).astype(int)
 
     # Features
-    ofi_list, tr_list, in_box_list, tr_pctl_list = [], [], [], []
+    tr_list, in_box_list, tr_pctl_list = [], [], []
     prev_close = float(df['close'].iloc[0])
     for h,l,c,o,v in zip(df['high'],df['low'],df['close'],df['open'],df['volume']):
         rb.update(float(h), float(l), float(prev_close))
         tr_val = true_range(float(h),float(l),float(prev_close))
         tr_list.append(tr_val)
-        ofi_list.append(approx_ofi(float(o),float(h),float(l),float(c),float(v)))
         s = sorted(rb.buffer)
         if s:
             idx = max(0, min(len(s)-1, (rbp.tr_pctl_max*len(s))//100))
@@ -170,8 +169,12 @@ def main():
         in_box_list.append(in_box)
         tr_pctl_list.append(pctl)
         prev_close = float(c)
-    df['ofi'] = ofi_list; df['tr'] = tr_list
-    df['in_box'] = in_box_list; df['tr_pctl'] = tr_pctl_list
+    df['tr'] = tr_list
+    df['in_box'] = in_box_list
+    df['tr_pctl'] = tr_pctl_list
+    ofi_window = params['entry']['ofi']['window']
+    align_ge = params['entry']['ofi']['align_ge']
+    df['ofi'] = approx_ofi(df, window=ofi_window, align_ge=align_ge)
 
     # Persistence
     m = gate.m

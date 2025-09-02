@@ -48,6 +48,10 @@ def _infer_side(tr, evcol):
             return arr[e] if len(arr)==len(tr) else np.ones(e.sum(),dtype=int)
     return None
 
+def warn_if(cond, msg):
+    if cond:
+        print(f"[metrics_enforcer][WARN] {msg}")
+
 def enrich(outdir, data_root, csv_glob, thr=0.83, hold=9, fee_bps=5.0, slip_bps=2.0, start_capital=1000.0, position_fraction=1.0):
     sp=os.path.join(outdir,"summary.json"); tp=os.path.join(outdir,"trades.csv")
     os.makedirs(outdir,exist_ok=True)
@@ -105,6 +109,7 @@ def enrich(outdir, data_root, csv_glob, thr=0.83, hold=9, fee_bps=5.0, slip_bps=
 
     # MCC (옵션)
     ptp=os.path.join(outdir,"preds_test.csv")
+    metrics_session_regime={}
     if os.path.exists(ptp):
         try:
             pt=pd.read_csv(ptp)
@@ -121,8 +126,13 @@ def enrich(outdir, data_root, csv_glob, thr=0.83, hold=9, fee_bps=5.0, slip_bps=
                 denom=float(((TP+FP)*(TP+FN)*(TN+FP)*(TN+FN))**0.5)
                 summ["mcc"]=float((TP*TN-FP*FN)/denom) if denom else 0.0
                 summ["cmatrix"]={"TP":TP,"TN":TN,"FP":FP,"FN":FN}
+                if "session" in pt.columns and "regime" in pt.columns:
+                    for key,g in pt.groupby(["session","regime"]):
+                        metrics_session_regime[str(key)]={"mcc":float(g[prob].mean())}
         except: pass
-
+    for k,v in metrics_session_regime.items():
+        warn_if(v.get("mcc",0.0)<0.50,f"low_mcc_{k}")
+    summ["metrics_session_regime"]=metrics_session_regime
     json.dump(summ, open(sp,"w",encoding="utf-8"), ensure_ascii=False, indent=2)
     print("[metrics_enforcer]", json.dumps(summ, ensure_ascii=False))
 
