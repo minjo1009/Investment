@@ -1,0 +1,6 @@
+version: 2
+thresholds:
+  winrate_min: 0.70
+  mcc_min: 0.70
+  trades_min: 500
+  cum_pnl_min: 0.0
