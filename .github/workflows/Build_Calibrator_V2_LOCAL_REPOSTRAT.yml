@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       CSV_GLOB:
-        description: Data CSV glob under data/ (auto-fallback to **/*.csv if no match)
+        description: Data CSV glob under data/ (auto-fallback to **/*.csv)
         default: "**/*ETHUSDT*1min*2020*2025*.csv"
         required: true
         type: string
@@ -38,7 +38,7 @@ jobs:
           pip install --upgrade pip
           pip install --prefer-binary "numpy<2.0" "pandas<2.3" "scikit-learn<1.5" "pyyaml"
 
-      - name: Prepare raw data (recursive unzip + fallback glob)
+      - name: Prepare raw data (recursive unzip + glob fallback)
         shell: bash
         run: |
           set -euo pipefail
@@ -47,8 +47,14 @@ jobs:
           [ -d data ] || { echo "::error::No data found. Put $DATA_ZIP or add data/"; exit 1; }
           find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d="$(dirname "$z")"; echo "::notice::Unzipping nested $z"; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
           find data -type f -name '*.csv.gz' -print0 | xargs -0 -I{} sh -c 'gzip -df "{}" || true'
-          MATCHES=$(python - <<'PY'\nimport glob,os\npat=os.environ.get('INPUT_CSV_GLOB') or '**/*.csv'\nms=glob.glob(os.path.join('data',pat), recursive=True)\nprint(len(ms))\nPY\n)
-          if [ "${MATCHES}" = "0" ]; then echo "::warning::No match for '${{ inputs.CSV_GLOB }}'. Falling back to '**/*.csv'"; echo "CSV_GLOB_EFF=**/*.csv" >> "$GITHUB_ENV"; else echo "CSV_GLOB_EFF=${{ inputs.CSV_GLOB }}" >> "$GITHUB_ENV"; fi
+          python - <<'PY'
+import glob, os, sys
+pat = os.environ.get('INPUT_CSV_GLOB') or '**/*.csv'
+ms = glob.glob(os.path.join('data', pat), recursive=True)
+eff = pat if ms else '**/*.csv'
+open(os.environ['GITHUB_ENV'],'a').write('CSV_GLOB_EFF='+eff+'\n')
+print('[DATA]', len(ms), 'matches; effective glob =', eff)
+PY
 
       - name: Locate calibrator script
         shell: bash
