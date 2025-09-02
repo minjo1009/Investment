@@ -68,6 +68,7 @@ def main():
     ap.add_argument('--csv-glob', required=True)
     ap.add_argument('--params', required=True)
     ap.add_argument('--outdir', required=True)
+    ap.add_argument('--calibrator', default=None, help='optional isotonic calibrator JSON')
     args = ap.parse_args()
 
     repo_root = Path('.').resolve()
@@ -96,6 +97,19 @@ def main():
                             thr_exit=conv['hysteresis']['thr_exit'],
                             alpha_cost=conv['ev_gate']['alpha_cost'])
     state = ConvictionState()
+    calibrator = None
+    if args.calibrator and Path(args.calibrator).exists():
+        try:
+            with open(args.calibrator, 'r', encoding='utf-8') as f:
+                cal = json.load(f)
+            xs = np.array(cal.get('X_', cal.get('x', [])), dtype=float)
+            ys = np.array(cal.get('y_', cal.get('y', [])), dtype=float)
+            if len(xs) and len(ys):
+                def _calib(x):
+                    return np.interp(x, xs, ys, left=ys[0], right=ys[-1])
+                calibrator = _calib
+        except Exception:
+            calibrator = None
 
     import glob
     matches = []
@@ -142,11 +156,23 @@ def main():
     aligned = pd.Series(aligned).rolling(m).sum().fillna(0).astype(int)
 
     # Probability
-    if 'p_hat' in df.columns: p_hat = df['p_hat'].clip(0,1).values
+    if 'p_hat' in df.columns:
+        p_raw = df['p_hat'].astype(float).clip(0,1).values
     else:
-        x = (macd_diff - pd.Series(macd_diff).rolling(100,min_periods=10).mean()) / (pd.Series(macd_diff).rolling(100,min_periods=10).std()+1e-9)
-        p_hat = (0.5 + 0.4 * (1/(1+np.exp(-x))).fillna(0.5)).values
-    p_hat_calib = df['p_hat_calibrated'].clip(0,1).values if 'p_hat_calibrated' in df.columns else p_hat
+        macd_z = (macd_diff - pd.Series(macd_diff).rolling(100, min_periods=10).mean()) / (pd.Series(macd_diff).rolling(100, min_periods=10).std()+1e-9)
+        ofi_z = (df['ofi'] - pd.Series(df['ofi']).rolling(100, min_periods=10).mean()) / (pd.Series(df['ofi']).rolling(100, min_periods=10).std()+1e-9)
+        score = np.tanh(macd_z.fillna(0) + ofi_z.fillna(0))
+        p_raw = ((score - score.min()) / (score.max() - score.min() + 1e-9)).fillna(0.5).values
+    if 'p_hat_calibrated' in df.columns:
+        p_trend = df['p_hat_calibrated'].astype(float).clip(0,1).values
+    else:
+        p_trend = p_raw
+        if calibrator is not None:
+            try:
+                p_trend = np.clip(calibrator(p_raw), 0, 1)
+            except Exception:
+                p_trend = p_raw
+    df['p_trend'] = p_trend
 
     # Regime
     atr_n = spec['components']['regime']['atr']['n']
@@ -167,21 +193,29 @@ def main():
     def calc_ev(pop): return pop*tp_bps - (1.0-pop)*sl_bps - frictions_bps
 
     for i in range(max(atr_n, m)+1, len(df)):
-        side = int(np.sign(dir_hint[i])); pop = float(p_hat_calib[i])
+        side = int(np.sign(dir_hint[i])); pop = float(p_trend[i])
         thr = thr_trend if regime[i]=='trend' else thr_range
         mom_k = int(aligned.iloc[i])
         ev_bps = calc_ev(pop)
         in_box = rb.in_balance_box()
         ofi_ok = (int(np.sign(df['ofi'].iloc[max(0,i-5):i].sum())) == side) if side!=0 else False
 
-        gating_dbg.append({"i":i,"side":side,"pop":pop,"thr":thr,"ev_bps":ev_bps,
-                           "mom_k_of_m":mom_k,"in_box":bool(in_box),"ofi_ok":bool(ofi_ok)})
+        passed_calib = pop >= thr
+        passed_persist = mom_k >= gate.k
+        passed_ev = ev_bps >= gate.alpha_cost * frictions_bps
+        dbg = {"i":i,"side":side,"pop":pop,"thr":thr,
+               "passed_calib":bool(passed_calib),"mom_k_of_m":mom_k,
+               "passed_persist":bool(passed_persist),"ev_bps":ev_bps,
+               "passed_ev":bool(passed_ev),"in_box":bool(in_box),"ofi_ok":bool(ofi_ok)}
 
         if position==0:
-            if (not in_box) and ofi_ok and side!=0:
-                if passes_conviction(pop, thr, mom_k, gate, ev_bps, frictions_bps, side, state):
-                    position = side; state.last_side = side
-                    entry_px = float(df['close'].iloc[i]); entry_idx = i
+            decision = passed_calib and passed_persist and passed_ev and (not in_box) and ofi_ok and side!=0
+            if decision:
+                position = side; state.last_side = side
+                entry_px = float(df['close'].iloc[i]); entry_idx = i
+                dbg["decision"] = "enter"
+            else:
+                dbg["decision"] = "reject"
         else:
             held = i - entry_idx
             pnl_bps = (float(df['close'].iloc[i]) / entry_px - 1.0) * (10000.0) * position
@@ -190,14 +224,25 @@ def main():
                 trades.append({"entry_idx":entry_idx,"exit_idx":i,"side":position,
                                "entry_px":entry_px,"exit_px":float(df['close'].iloc[i]),"pnl_bps":pnl_bps})
                 position, entry_idx, entry_px = 0, -1, 0.0
+                dbg["decision"] = "exit"
+            else:
+                dbg["decision"] = "hold"
+        gating_dbg.append(dbg)
 
-    # Summaries
+    # Metrics
+    actual = np.sign(df['close'].shift(-1) - df['close']).fillna(0).values
+    pred = np.sign(p_trend - 0.5)
+    tp = int(((pred==1)&(actual==1)).sum()); tn = int(((pred==-1)&(actual==-1)).sum())
+    fp = int(((pred==1)&(actual==-1)).sum()); fn = int(((pred==-1)&(actual==1)).sum())
+    denom = math.sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
+    mcc = float((tp*tn - fp*fn)/denom) if denom>0 else 0.0
+
     if trades:
         pnl = np.array([t["pnl_bps"] for t in trades])
-        winrate = float((pnl>0).mean()) if len(pnl)>0 else 0.0
-        summary = {"n_trades": int(len(trades)), "winrate": winrate, "cum_pnl_bps": float(pnl.sum())}
+        hit_rate = float((pnl>0).mean()) if len(pnl)>0 else 0.0
+        summary = {"n_trades": int(len(trades)), "hit_rate": hit_rate, "mcc": mcc, "cum_pnl_bps": float(pnl.sum())}
     else:
-        summary = {"n_trades": 0, "winrate": 0.0, "cum_pnl_bps": 0.0}
+        summary = {"n_trades": 0, "hit_rate": 0.0, "mcc": mcc, "cum_pnl_bps": 0.0}
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -211,7 +256,7 @@ def main():
     with open(outdir/"gating_debug.json","w",encoding="utf-8") as f:
         json.dump(gating_dbg, f, ensure_ascii=False, indent=2)
     # preds_test (audit)
-    audit = pd.DataFrame({"ofi": df["ofi"], "tr": df["tr"]})
+    audit = pd.DataFrame({tcol: df[tcol], "p_trend": p_trend, "ofi": df["ofi"], "macd_hist": macd_diff})
     audit.to_csv(outdir/"preds_test.csv", index=False)
     # summary
     with open(outdir/"summary.json","w",encoding="utf-8") as f:
