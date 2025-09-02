@@ -34,10 +34,21 @@ try:
             except Exception: pass
         return out
     def _ensure_timestamp(df):
-        if "timestamp" in df.columns and df["timestamp"].notna().any(): return df
-        cands = [c for c in df.columns if str(c).lower() in ("timestamp","datetime","open_time","time_open","candle_begin_time","ts","t","date","time")]
-        order = ["timestamp","datetime","open_time","time_open","candle_begin_time","ts","t","date","time"]
-        cands.sort(key=lambda c: order.index(str(c).lower()) if str(c).lower() in order else 999)
+        """Ensure there is a UTC `timestamp` column from common variants."""
+        if "timestamp" in df.columns and df["timestamp"].notna().any():
+            df["timestamp"] = _to_utc(df["timestamp"])
+        else:
+            cands = [
+                c for c in df.columns
+                if str(c).lower() in (
+                    "timestamp","datetime","open_time","time_open","candle_begin_time",
+                    "ts","t","date","time"
+                )
+            ]
+            order = ["timestamp","datetime","open_time","time_open","candle_begin_time","ts","t","date","time"]
+            cands.sort(key=lambda c: order.index(str(c).lower()) if str(c).lower() in order else 999)
+            if cands:
+                df["timestamp"] = _to_utc(df[cands[0]])
         if "timestamp" in df.columns:
             df.sort_values("timestamp", inplace=True, ignore_index=True)
             df.drop_duplicates(subset=["timestamp"], keep="last", inplace=True)
@@ -314,17 +325,20 @@ def main():
         summary = {"n_trades": 0, "hit_rate": 0.0, "mcc": mcc, "cum_pnl_bps": 0.0}
 
     try:
-        entry_dbg = [d for d in gating_dbg if d.get('decision')=='enter']
-        if entry_dbg:
-            ent = pd.DataFrame({"p": [d['pop'] for d in entry_dbg],
-                                "p_ev_req": [d.get('p_ev_req', float('nan')) for d in entry_dbg]})
-            bins = np.linspace(0,1,21)
-            ent['bin'] = pd.cut(ent['p'], bins, include_lowest=True, right=True)
-            rel = ent.groupby('bin')['p'].agg(['count','mean']).reset_index().rename(columns={'mean':'p_bin_mean'})
-            with open(Path(args.outdir)/"calibration_report.json","w") as f:
-                json.dump({"reliability": rel.to_dict(orient='list')}, f, indent=2)
+        # 엔트리 인덱스 추출
+        entry_idxs = [t["entry_idx"] for t in trades]
+        ent = pd.DataFrame({
+            "p": [float(p_trend[i]) for i in entry_idxs],
+            "p_ev_req": [float(p_ev_req) if 'p_ev_req' in locals() else np.nan for _ in entry_idxs]
+        })
+        bins = np.linspace(0,1,21)
+        ent['bin'] = pd.cut(ent['p'], bins, include_lowest=True, right=True)
+        rel = ent.groupby('bin')['p'].agg(['count','mean']).reset_index().rename(columns={'mean':'p_bin_mean'})
+        with open(Path(args.outdir)/"calibration_report.json","w") as f:
+            json.dump({"reliability": rel.to_dict(orient='list')}, f, indent=2)
     except Exception:
         pass
+
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)

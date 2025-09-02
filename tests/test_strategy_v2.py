@@ -104,7 +104,7 @@ def test_dynamic_atr_exits(tmp_path: Path):
 def test_artifacts_schema(tmp_path: Path):
     outdir = _run(tmp_path)
     preds = pd.read_csv(outdir / 'preds_test.csv')
-    assert set(['p_trend','ofi','macd_hist']).issubset(preds.columns)
+    assert set(['timestamp','p_trend','ofi','macd_hist']).issubset(preds.columns)
     summary = json.load(open(outdir / 'summary.json'))
     for k in ['n_trades','hit_rate','mcc','cum_pnl_bps']:
         assert k in summary
