@@ -73,6 +73,7 @@ def main():
 
     repo_root = Path('.').resolve()
     spec = load_yaml(repo_root/'specs'/'strategy_v2_spec.yml')
+    paths = load_yaml(repo_root/'ops'/'paths_packaging_v2.yml')
     os.makedirs(args.outdir, exist_ok=True)
 
     params = load_yaml(args.params)
@@ -84,7 +85,6 @@ def main():
     rbp = RollingBalanceParams(win=spec['components']['structure']['rolling_balance_avoid']['win_min'],
                                tr_pctl_max=spec['components']['structure']['rolling_balance_avoid']['tr_pctl_max'])
     rb = RollingBalance(rbp)
-    ofi_lb = spec['components']['orderflow']['ofi_align']['lookback']
 
     fr = Frictions(fee_bps_per_side=params['meta'].get('fee_bps_per_side',5),
                    slippage_bps_per_side=params['meta'].get('slippage_bps_per_side',2),
@@ -140,26 +140,14 @@ def main():
     dir_hint = np.sign(macd_diff).astype(int)
 
     # Features
-    ofi_list, tr_list, in_box_list, tr_pctl_list = [], [], [], []
+    ofi_list, tr_list = [], []
     prev_close = float(df['close'].iloc[0])
     for h,l,c,o,v in zip(df['high'],df['low'],df['close'],df['open'],df['volume']):
         rb.update(float(h), float(l), float(prev_close))
-        tr_val = true_range(float(h),float(l),float(prev_close))
-        tr_list.append(tr_val)
+        tr_list.append(true_range(float(h),float(l),float(prev_close)))
         ofi_list.append(approx_ofi(float(o),float(h),float(l),float(c),float(v)))
-        s = sorted(rb.buffer)
-        if s:
-            idx = max(0, min(len(s)-1, (rbp.tr_pctl_max*len(s))//100))
-            thr = s[idx]
-            in_box = rb.buffer[-1] <= thr
-            pctl = (np.searchsorted(s, rb.buffer[-1], side='right')/len(s))*100.0
-        else:
-            in_box, pctl = False, 100.0
-        in_box_list.append(in_box)
-        tr_pctl_list.append(pctl)
         prev_close = float(c)
     df['ofi'] = ofi_list; df['tr'] = tr_list
-    df['in_box'] = in_box_list; df['tr_pctl'] = tr_pctl_list
 
     # Persistence
     m = gate.m
@@ -210,9 +198,8 @@ def main():
         thr = thr_trend if regime[i]=='trend' else thr_range
         mom_k = int(aligned.iloc[i])
         ev_bps = calc_ev(pop)
-        in_box = bool(df['in_box'].iloc[i])
-        tr_pctl = float(df['tr_pctl'].iloc[i])
-        ofi_ok = (int(np.sign(df['ofi'].iloc[max(0,i-ofi_lb):i].sum())) == side) if side!=0 else False
+        in_box = rb.in_balance_box()
+        ofi_ok = (int(np.sign(df['ofi'].iloc[max(0,i-5):i].sum())) == side) if side!=0 else False
 
         passed_calib = pop >= thr
         passed_persist = mom_k >= gate.k
@@ -220,8 +207,7 @@ def main():
         dbg = {"i":i,"side":side,"pop":pop,"thr":thr,
                "passed_calib":bool(passed_calib),"mom_k_of_m":mom_k,
                "passed_persist":bool(passed_persist),"ev_bps":ev_bps,
-               "passed_ev":bool(passed_ev),"in_box":bool(in_box),
-               "tr_pctl":tr_pctl,"ofi_ok":bool(ofi_ok)}
+               "passed_ev":bool(passed_ev),"in_box":bool(in_box),"ofi_ok":bool(ofi_ok)}
 
         if position==0:
             decision = passed_calib and passed_persist and passed_ev and (not in_box) and ofi_ok and side!=0
