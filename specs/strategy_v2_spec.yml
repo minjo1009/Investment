@@ -1,0 +1,70 @@
+version: 2.0
+name: crypto_min_conviction_v2
+meta:
+  author: researchV2
+  created_utc: 20250902_005759
+objectives:
+  monthly_winrate_target: 0.70
+  monthly_return_target: 3.0
+  mcc_target: 0.70
+components:
+  signal:
+    macd:
+      fast: 12
+      slow: 26
+      signal: 9
+      denoise: true
+    divergence:
+      swing_lookback: 7
+  regime:
+    atr:
+      n: 14
+      z_trend_min: 0.5
+  structure:
+    rolling_balance_avoid:
+      win_min: 60
+      tr_pctl_max: 25
+  orderflow:
+    ofi_align:
+      lookback: 5
+  gating:
+    calibration:
+      method: isotonic
+      target_pop: 0.72
+      p_thr:
+        trend: 0.86
+        range: 0.90
+    conviction:
+      persistence:
+        m: 5
+        k: 3
+      ev_gate:
+        alpha_cost: 2.0
+      hysteresis:
+        thr_entry: 0.88
+        thr_exit: 0.82
+      reentry_reset:
+        swing_lookback: 10
+        require_break_of_extreme: true
+  exits:
+    min_hold: 8
+    max_hold: 60
+    breakeven_bps: 7
+    tp_bps: 38
+    sl_bps: 22
+  sizing:
+    position_fraction: 1.0
+  costs:
+    fee_bps_per_side: 5
+    slippage_bps_per_side: 2
+    funding_bps_estimate: 0.5
+ops:
+  dynamic_tod_block:
+    lookback_days: 30
+    vol_pctl: 20
+artifacts:
+  must_produce:
+    - out/summary.json
+    - out/gating_debug.json
+    - out/preds_test.csv
+    - out/trades.csv
