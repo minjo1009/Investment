@@ -45,7 +45,7 @@ jobs:
           if [ ! -d data ]; then echo "::error::No data found. Put $DATA_ZIP or add data/"; exit 1; fi
           find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d=`dirname "$z"`; echo "::notice::Unzipping nested $z"; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
           find data -type f -name '*.csv.gz' -print0 | xargs -0 -I{} sh -c 'gzip -df "{}" || true'
-          python -c "import glob,os; pat=os.environ.get('INPUT_CSV_GLOB') or '**/*.csv'; ms=glob.glob(os.path.join('data',pat), recursive=True); eff=pat if ms else '**/*.csv'; open(os.environ['GITHUB_ENV'],'a').write('CSV_GLOB_EFF='+eff+'\n'); print('[DATA]',len(ms),'matches; effective glob =',eff)"
+          python -c "import glob,os; pat=os.environ.get('INPUT_CSV_GLOB') or '**/*.csv'; ms=glob.glob(os.path.join('data',pat), recursive=True); eff=pat if ms else '**/*.csv'; open(os.environ['GITHUB_ENV'],'a').write('CSV_GLOB_EFF='+eff+'\n')"
       - name: Locate calibrator script
         shell: bash
         run: |

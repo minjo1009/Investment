@@ -51,7 +51,7 @@ jobs:
           if [ ! -d data ]; then echo "::error::No data found. Put $DATA_ZIP or add data/"; exit 1; fi
           find data -type f -name '*.zip' -print0 | while IFS= read -r -d '' z; do d=`dirname "$z"`; echo "::notice::Unzipping nested $z"; unzip -q -o "$z" -d "$d" || true; rm -f "$z" || true; done
           find data -type f -name '*.csv.gz' -print0 | xargs -0 -I{} sh -c 'gzip -df "{}" || true'
-          python -c "import glob,os; pat=os.environ.get('INPUT_CSV_GLOB') or '**/*.csv'; ms=glob.glob(os.path.join('data',pat), recursive=True); eff=pat if ms else '**/*.csv'; open(os.environ['GITHUB_ENV'],'a').write('CSV_GLOB_EFF='+eff+'\n'); print('[DATA]',len(ms),'matches; effective glob =',eff)"
+          python -c "import glob,os; pat=os.environ.get('INPUT_CSV_GLOB') or '**/*.csv'; ms=glob.glob(os.path.join('data',pat), recursive=True); eff=pat if ms else '**/*.csv'; open(os.environ['GITHUB_ENV'],'a').write('CSV_GLOB_EFF='+eff+'\n')"
       - name: Install dependencies
         shell: bash
         run: |
@@ -59,13 +59,25 @@ jobs:
           python -V; python -m pip -V
           python -m pip install --upgrade pip
           python -m pip install --prefer-binary 'numpy<2.0' 'llvmlite==0.42.*' 'numba==0.59.*' 'pandas<2.3' 'scikit-learn<1.5' 'pyyaml'
+      - name: Determine mode support
+        shell: bash
+        run: |
+          set -e
+          MODE_OPT=""
+          python "$RUNNER" -h > .runner_help.txt 2>&1 || true
+          if grep -q -- "--mode" .runner_help.txt; then MODE_OPT="--mode run"; fi
+          echo "MODE_OPT=$MODE_OPT" >> "$GITHUB_ENV"
       - name: Run backtest
         shell: bash
         run: |
           set -e
           CAL_OPT=""; if [ -f "$CALIB_JSON" ]; then CAL_OPT="--calibrator $CALIB_JSON"; fi
           install -d "out/${{ inputs.OUTDIR }}"
-          python "$RUNNER" --mode run --data-root data --csv-glob "${CSV_GLOB_EFF}" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" $CAL_OPT
+          if [ -n "$MODE_OPT" ]; then
+            python "$RUNNER" $MODE_OPT --data-root data --csv-glob "${CSV_GLOB_EFF}" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" $CAL_OPT
+          else
+            python "$RUNNER" --data-root data --csv-glob "${CSV_GLOB_EFF}" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" $CAL_OPT
+          fi
       - name: Inspect outputs
         shell: bash
         run: |
