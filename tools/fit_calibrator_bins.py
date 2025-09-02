@@ -6,10 +6,10 @@ ap.add_argument('--out', default='conf/calibrator_bins.json')
 args = ap.parse_args()
 
 df = pd.read_csv(args.preds)
-if 'p_trend' in df.columns:
+if 'p_trend' in df.columns and 'macd_hist' in df.columns:
     p = df['p_trend'].astype(float).clip(0,1).values
 else:
-    raise SystemExit('need preds with p_trend')
+    raise SystemExit('need preds with p_trend and macd_hist')
 
 bins = np.linspace(0,1,21)
 centers = (bins[:-1]+bins[1:])/2.0
