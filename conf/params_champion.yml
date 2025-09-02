@@ -1,5 +1,5 @@
 entry:
-  p_thr: {trend: 0.83, range: 0.83}
+  p_thr: {trend: 0.82, range: 0.86}
 exit:
   min_hold: 8
 meta:
