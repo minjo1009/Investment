@@ -268,7 +268,6 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     # trades
-    import csv
     with open(outdir/"trades.csv","w",newline="",encoding="utf-8") as f:
         fn = list(trades[0].keys()) if trades else ["entry_idx","exit_idx","side","entry_px","exit_px","pnl_bps"]
         w = csv.DictWriter(f, fieldnames=fn); w.writeheader()
