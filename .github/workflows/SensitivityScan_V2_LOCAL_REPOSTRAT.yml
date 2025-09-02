@@ -1,5 +1,4 @@
-
- name: SensitivityScan_V2_LOCAL_REPOSTRAT
+name: SensitivityScan_V2_LOCAL_REPOSTRAT
  on:
    workflow_dispatch:
      inputs:
