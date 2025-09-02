@@ -1,12 +1,37 @@
-version: 2.0
+version: 2.1
 name: crypto_min_conviction_v2
 meta:
   author: researchV2
-  created_utc: 20250902_005759
+  updated_utc: 20250902_085206
 objectives:
   monthly_winrate_target: 0.70
   monthly_return_target: 3.0
   mcc_target: 0.70
+
+# ✅ 실행/데이터 계약(러너와의 합의: 필수 컬럼·타임프레임·TZ)
+contracts:
+  data:
+    timeframe: 1min
+    timezone: UTC
+    symbol: ETHUSDT
+    required_columns:
+      - timestamp   # 러너 패치가 open_time→timestamp 자동 생성, 그래도 명시
+      - open
+      - high
+      - low
+      - close
+      - volume
+    optional_columns:
+      - number_of_trades
+      - taker_buy_base_asset_volume
+  metrics:
+    must_compute:
+      - mcc
+      - hit_rate
+      - pnl
+    report_files:
+      - out/summary.json
+
 components:
   signal:
     macd:
@@ -22,8 +47,8 @@ components:
       z_trend_min: 0.5
   structure:
     rolling_balance_avoid:
-      win_min: 60
-      tr_pctl_max: 25
+      win_min: 60         # 최근 N 트레이드 윈/로스 롤링 밸런스
+      tr_pctl_max: 25     # 하위 pctl이면 트레이드 억제
   orderflow:
     ofi_align:
       lookback: 5
@@ -39,7 +64,7 @@ components:
         m: 5
         k: 3
       ev_gate:
-        alpha_cost: 2.0
+        alpha_cost: 2.0    # bps 기준(=0.0002), 러너 내부에서 EV 필터에 사용
       hysteresis:
         thr_entry: 0.88
         thr_exit: 0.82
@@ -54,14 +79,17 @@ components:
     sl_bps: 22
   sizing:
     position_fraction: 1.0
+    leverage_max: 3           # 런타임에서 미사용이면 무시됨(확장 대비)
   costs:
     fee_bps_per_side: 5
     slippage_bps_per_side: 2
     funding_bps_estimate: 0.5
+
 ops:
   dynamic_tod_block:
     lookback_days: 30
     vol_pctl: 20
+
 artifacts:
   must_produce:
     - out/summary.json
