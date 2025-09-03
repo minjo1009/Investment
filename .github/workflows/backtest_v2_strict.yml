@@ -60,42 +60,26 @@ jobs:
         run: |
           set -e
           cp "${{ inputs.DATA_ZIP }}" _in/data.zip
-          python - <<'PY'
-import zipfile, os
-z=zipfile.ZipFile('_in/data.zip')
-z.extractall('data')
-open('_out_4u/run/gating_debug.json','a').close()
-PY
+          python -c "import zipfile, os; z=zipfile.ZipFile('_in/data.zip'); z.extractall('data'); open('_out_4u/run/gating_debug.json','a').close()"
 
       - name: Optional code pack
         if: ${{ inputs.CODE_ZIP != '' }}
         run: |
           set -e
           cp "${{ inputs.CODE_ZIP }}" _in/code.zip
-          python - <<'PY'
-import zipfile
-zipfile.ZipFile('_in/code.zip').extractall('.')
-PY
+          python -c "import zipfile; zipfile.ZipFile('_in/code.zip').extractall('.')"
 
       - name: Detect CSV and preflight
         run: |
           set -e
-          python - <<'PY'
-import glob, sys, pandas as pd, json, os
-g = os.environ.get("CSV_GLOB") or "${{ inputs.CSV_GLOB }}"
-cands = glob.glob(f"**/{g}", recursive=True)
-if not cands: 
-    print("CSV NOT FOUND"); sys.exit(2)
-csv = cands[0]
-df = pd.read_csv(csv, nrows=5)
-need = {"open_time","open","high","low","close","volume"}
-if not need.issubset(set(map(str.lower, df.columns))):
-    low = set([c.lower() for c in df.columns])
-    if not need.issubset(low):
-        print("MISSING COLUMNS", need - low); sys.exit(2)
-print("CSV_PATH", csv)
-open("_out_4u/run/gating_debug.json",'a').close()
-PY
+          python -c "import glob, sys, pandas as pd, os; g=os.environ.get('CSV_GLOB') or '${{ inputs.CSV_GLOB }}'; \
+            cands=glob.glob(f'**/{g}', recursive=True); \
+            if not cands: print('CSV NOT FOUND'); sys.exit(2); \
+            csv=cands[0]; df=pd.read_csv(csv, nrows=5); \
+            need={'open_time','open','high','low','close','volume'}; \
+            low={c.lower() for c in df.columns}; \
+            if not need.issubset(low): print('MISSING COLUMNS', need-low); sys.exit(2); \
+            print('CSV_PATH', csv); open('_out_4u/run/gating_debug.json','a').close()"
 
       - name: Run backtest
         run: |
@@ -107,28 +91,21 @@ PY
             --flags conf/feature_flags.yml \
             --outdir _out_4u/run \
             --limit-bars 250000 || true
-          python - <<'PY'
-import json, os, sys
-p="_out_4u/run/summary.json"
-if not os.path.exists(p):
-    open("_out_4u/run/summary.json","w").write(json.dumps({}))
-    open("_out_4u/run/preds_test.csv","w").write("")
-    open("_out_4u/run/trades.csv","w").write("")
-    open("_out_4u/run/gating_debug.json","a").close()
-print("Artifacts ensured")
-PY
+          python -c "import json, os; p='_out_4u/run/summary.json'; \
+            if not os.path.exists(p): \
+              open(p,'w').write(json.dumps({})); \
+              open('_out_4u/run/preds_test.csv','w').write(''); \
+              open('_out_4u/run/trades.csv','w').write(''); \
+              open('_out_4u/run/gating_debug.json','a').close(); \
+            print('Artifacts ensured')"
 
       - name: Print metrics & gates
         run: |
-          python - <<'PY'
-import json, os
-s=json.load(open("_out_4u/run/summary.json")) if os.path.exists("_out_4u/run/summary.json") else {}
-print("[SUMMARY]", {k:s.get(k) for k in ["winrate","mcc","num_trades","cum_pnl_bps"]})
-import pandas as pd
-dbg=pd.read_json("_out_4u/run/gating_debug.json", lines=False, typ="list") if os.path.exists("_out_4u/run/gating_debug.json") else pd.DataFrame()
-cols=[c for c in ["divergence","in_box","OFI_z","regime","size_frac"] if c in dbg]
-print("[COLUMNS_PRESENT]", cols)
-PY
+          python -c "import json, os, pandas as pd; s=json.load(open('_out_4u/run/summary.json')) if os.path.exists('_out_4u/run/summary.json') else {}; \
+            print('[SUMMARY]', {k:s.get(k) for k in ['winrate','mcc','num_trades','cum_pnl_bps']}); \
+            dbg=pd.read_json('_out_4u/run/gating_debug.json', lines=False, typ='list') if os.path.exists('_out_4u/run/gating_debug.json') else pd.DataFrame(); \
+            cols=[c for c in ['divergence','in_box','OFI_z','regime','size_frac'] if c in dbg]; \
+            print('[COLUMNS_PRESENT]', cols)"
 
       - name: Upload artifacts (pinned)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
