@@ -76,7 +76,8 @@ s=json.load(open(f'{base}/summary.json')) if os.path.exists(f'{base}/summary.jso
 print('=== SUMMARY ===')
 print({'winrate': s.get('winrate'), 'mcc': s.get('mcc'),
        'num_trades': s.get('num_trades'), 'cum_pnl_bps': s.get('cum_pnl_bps')})
-dbg = pd.read_json(f'{base}/gating_debug.json', typ='list') if os.path.getsize(f'{base}/gating_debug.json') > 0 else pd.DataFrame()
+dbg = pd.read_json(f'{base}/gating_debug.json', typ='list') if os.path.getsize(f'{base}/gating_debug.json') > 0 else pd.Data
+Frame()
 cols = [c for c in ['divergence','in_box','ofi_z','regime','size_frac'] if c in dbg]
 print('=== GATE COLUMNS PRESENT ===')
 print(cols)
