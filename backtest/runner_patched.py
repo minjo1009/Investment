@@ -8,7 +8,7 @@ runner_patched.py — Strategy V2 (Vectorized): Conviction Gate + EV(prob-mode) 
 - Reports: calibration_report.json, gate_waterfall.json
 - Debug: gating_debug.csv (entries/exits), optional JSON
 """
-import os, sys, json, argparse, csv, math, glob
+import os, sys, json, argparse, csv, math, glob, shutil
 from pathlib import Path
 import yaml
 import numpy as np
@@ -384,7 +384,15 @@ def main():
 
     # preds (optional)
     if not args.no_preds:
-        audit = pd.DataFrame({tcol: df[tcol], "p_trend": p_trend, "ofi": ofi, "macd_hist": macd_diff, "regime": regime})
+        label = (pd.Series(C).shift(-1) > pd.Series(C)).astype(float).fillna(0.0).to_numpy()
+        audit = pd.DataFrame({
+            tcol: df[tcol],
+            "p_trend": p_trend,
+            "ofi": ofi,
+            "macd_hist": macd_diff,
+            "regime": regime,
+            "label": label
+        })
         audit.to_csv(outdir / "preds_test.csv", index=False)
 
     # summary
@@ -392,23 +400,31 @@ def main():
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
     # calibration report (entries only, 20 bins)
+    report = {
+        "reliability": {"bin": [], "count": [], "mean": []},
+        "stats": {"count": 0, "p_mean": 0, "p_median": 0, "p_ev_req_mean": 0}
+    }
     try:
         eidx = [t["entry_idx"] for t in trades]
         if len(eidx):
             ent_p = np.array([float(p_trend[i]) for i in eidx], dtype=float)
-            bins = np.linspace(0,1,21)
+            bins = np.linspace(0, 1, 21)
             cats = pd.cut(ent_p, bins, include_lowest=True, right=True)
-            rel = pd.DataFrame({"p": ent_p, "bin": cats}).groupby("bin")["p"].agg(["count","mean"]).reset_index()
+            rel = pd.DataFrame({"p": ent_p, "bin": cats}).groupby("bin")["p"].agg(["count", "mean"]).reset_index()
+            rel["bin"] = rel["bin"].astype(str)
             stats = {
                 "count": int(rel["count"].sum()),
                 "p_mean": float(np.mean(ent_p)) if len(ent_p) else 0.0,
                 "p_median": float(np.median(ent_p)) if len(ent_p) else 0.0,
-                "p_ev_req_mean": float(np.mean(p_ev_req[eidx])) if len(eidx) else 0.0
+                "p_ev_req_mean": float(np.mean(p_ev_req[eidx])) if len(eidx) else 0.0,
             }
-            with open(outdir / "calibration_report.json", "w", encoding="utf-8") as f:
-                json.dump({"reliability": rel.to_dict(orient="list"), "stats": stats}, f, indent=2)
+            report = {"reliability": rel.to_dict(orient="list"), "stats": stats}
     except Exception:
         pass
+    tmp = outdir / "calibration_report.json.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+    shutil.move(str(tmp), str(outdir / "calibration_report.json"))
 
     # gate waterfall (cumulative survivors)
     try:

@@ -26,14 +26,17 @@ entry:
     avoid_in_box: true
 
 exit:
-  tp_sl:
-    trend: {mode: dyn_atr}
-    range: {mode: dyn_atr}
+  mode: dynamic_atr
+  atr:
+    n: 14
+    use_ema: true
+    tp_mult: {trend: 3.0, range: 1.4}
+    sl_mult: {trend: 1.0, range: 1.1}
+    cap_bps: {tp_min: 10, tp_max: 400, sl_min: 8, sl_max: 220}
   min_hold: 8
   max_hold: 60
-  be:
-    arm_after_bars: 6
-    arm_trigger_bps: 8
+  breakeven_bps: 7
+  cooldown: 5
 
 regime:
   detector:

@@ -12,12 +12,12 @@ components:
   orderflow:
     ofi_align:
       lookback: 12
-      z_min: 0.30
+      z_min: 0.6
   costs: {fee_bps_side: 5, slip_bps_side: 2, funding_bps_rt: 0.5}
-  exit: {mode: dyn_atr}
+  exit: {mode: dynamic_atr}
   gating:
     conviction:
-      persistence: {m: 5, k: 3}
+      persistence: {m: 6, k: 4}
       hysteresis: {thr_entry: 0.88, thr_exit: 0.82}
       ev_gate:
         alpha_cost: 1.0
