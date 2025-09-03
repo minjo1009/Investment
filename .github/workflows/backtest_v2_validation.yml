@@ -29,11 +29,13 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -e
           python -m pip install -U pip
           pip install pandas numpy scikit-learn pyyaml
 
       - name: Prepare directories
         run: |
+          set -e
           install -d _in _out_4u/run data
 
       - name: Extract data zip
@@ -41,9 +43,11 @@ jobs:
           set -e
           cp "${{ inputs.DATA_ZIP }}" _in/data.zip
           python -c "import zipfile; zipfile.ZipFile('_in/data.zip').extractall('data')"
-          mkdir -p _out_4u/run && touch _out_4u/run/gating_debug.json
+          mkdir -p _out_4u/run
+          : > _out_4u/run/gating_debug.json
 
       - name: Run backtest
+        shell: bash
         run: |
           set -e
           python backtest/runner_patched.py \
@@ -53,29 +57,25 @@ jobs:
             --flags conf/feature_flags.yml \
             --outdir _out_4u/run \
             --limit-bars 250000 || true
-          python - <<'PY'
-import json, os
-base = '_out_4u/run'
-if not os.path.exists(f'{base}/summary.json'):
-    json.dump({}, open(f'{base}/summary.json','w'))
-    open(f'{base}/preds_test.csv','w').close()
-    open(f'{base}/trades.csv','w').close()
-PY
+          python -c "import json,os; base='_out_4u/run'; \
+p=f'{base}/summary.json'; \
+open(p,'a').close() if os.path.exists(p) else open(p,'w').write('{}'); \
+open(f'{base}/preds_test.csv','a').close(); \
+open(f'{base}/trades.csv','a').close()"
 
       - name: Print summary metrics and gate columns
+        shell: bash
         run: |
-          python - <<'PY'
-import json, os, pandas as pd
-base='_out_4u/run'
-s=json.load(open(f'{base}/summary.json')) if os.path.exists(f'{base}/summary.json') else {}
-print('=== SUMMARY ===')
-print({'winrate': s.get('winrate'), 'mcc': s.get('mcc'),
-       'num_trades': s.get('num_trades'), 'cum_pnl_bps': s.get('cum_pnl_bps')})
-dbg = pd.read_json(f'{base}/gating_debug.json', typ='list') if os.path.getsize(f'{base}/gating_debug.json') > 0 else pd.DataFrame()
-cols = [c for c in ['divergence','in_box','ofi_z','regime','size_frac'] if c in dbg]
-print('=== GATE COLUMNS PRESENT ===')
-print(cols)
-PY
+          python -c "import json,os; base='_out_4u/run'; s={}; \
+p=f'{base}/summary.json'; \
+s=json.load(open(p)) if os.path.exists(p) and os.path.getsize(p)>0 else {}; \
+print('=== SUMMARY ==='); \
+print({'winrate': s.get('winrate'), 'mcc': s.get('mcc'), 'num_trades': s.get('num_trades'), 'cum_pnl_bps': s.get('cum_pnl_bps')})"
+          python -c "import os,pandas as pd; base='_out_4u/run'; g=f'{base}/gating_debug.json'; \
+print('=== GATE COLUMNS PRESENT ==='); \
+import sys; \
+print([]) if (not os.path.exists(g) or os.path.getsize(g)==0) else \
+(print([c for c in ['divergence','in_box','ofi_z','regime','size_frac'] if c in pd.read_json(g,typ='list').columns]))"
 
       - name: Upload artifacts (pinned)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
