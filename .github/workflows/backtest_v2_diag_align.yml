@@ -1,0 +1,260 @@
+name: BacktestV2-Diagnostics-Alignment
+
+on:
+  workflow_dispatch:
+    inputs:
+      GIT_REF:
+        description: 'branch/tag/SHA (e.g. codex/fix-yaml-syntax-error-in-workflow-h7x829)'
+        required: false
+      DATA_ZIP:
+        description: 'ZIP file with CSV data (e.g., ETHUSDT_1min_2020_2025.zip)'
+        required: true
+      CSV_GLOB:
+        description: 'Glob inside extracted data'
+        required: true
+        default: '*.csv'
+
+jobs:
+  diag_align:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (exact ref, full history)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ inputs.GIT_REF || github.ref || github.head_ref }}
+          fetch-depth: 0
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install -U pip
+          pip install pandas numpy scikit-learn pyyaml
+
+      - name: Prepare + extract data
+        run: |
+          set -e
+          install -d _in _out_4u/run data
+          cp "${{ inputs.DATA_ZIP }}" _in/data.zip
+          unzip -q -o _in/data.zip -d data
+
+      - name: Run backtest (baseline for diagnostics)
+        shell: bash
+        run: |
+          set -e
+          python backtest/runner_patched.py \
+            --data-root data \
+            --csv-glob "${{ inputs.CSV_GLOB }}" \
+            --params conf/params_champion.yml \
+            --flags conf/feature_flags.yml \
+            --outdir _out_4u/run \
+            --debug-level entries \
+            --limit-bars 250000 || true
+          base="_out_4u/run"
+          [ -s "$base/summary.json" ] || printf '{}' > "$base/summary.json"
+          [ -s "$base/gating_debug.json" ] || echo "[]" > "$base/gating_debug.json"
+          [ -s "$base/preds_test.csv" ] || : > "$base/preds_test.csv"
+          [ -s "$base/trades.csv" ]     || : > "$base/trades.csv"
+
+      - name: (1) Diagnostics — numbers only (what is breaking)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, json, pandas as pd, numpy as np, pathlib, sys
+          BASE = "_out_4u/run"
+          GJ   = os.path.join(BASE,"gating_debug.json")
+          TC   = os.path.join(BASE,"trades.csv")
+          OUTD = pathlib.Path("_out_4u/diagnostics"); OUTD.mkdir(parents=True, exist_ok=True)
+
+          # Robust loader for gating_debug (array or lines)
+          def load_dbg(p):
+              if not (os.path.exists(p) and os.path.getsize(p)>0): return pd.DataFrame()
+              try:
+                  return pd.read_json(p)
+              except ValueError:
+                  try: return pd.read_json(p, lines=True)
+                  except: return pd.DataFrame()
+
+          dbg = load_dbg(GJ)
+          tr  = pd.read_csv(TC) if (os.path.exists(TC) and os.path.getsize(TC)>0) else pd.DataFrame()
+
+          def mcc(tp, tn, fp, fn):
+              num = tp*tn - fp*fn
+              den = np.sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
+              return float(num/den) if den>0 else 0.0
+
+          report = {}
+
+          # 1) Calibration bins
+          calib_tbl = pd.DataFrame()
+          if {'pop','y_true'}.issubset(dbg.columns):
+              d2 = dbg.dropna(subset=['pop','y_true']).copy()
+              bins = np.linspace(0,1,11)
+              d2['p_bin'] = pd.cut(d2['pop'].astype(float), bins, include_lowest=True)
+              calib_tbl = d2.groupby('p_bin').agg(pop_mean=('pop','mean'),
+                                                  y_rate=('y_true','mean'),
+                                                  n=('y_true','size')).reset_index()
+              w = calib_tbl['n'].values
+              rmse = np.sqrt(((calib_tbl['pop_mean']-calib_tbl['y_rate'])**2 * w).sum() / max(1,w.sum()))
+              report['calibration_rmse'] = float(rmse)
+          else:
+              report['calibration_rmse'] = None
+
+          # 2) Regime threshold scan
+          scan_rows = []
+          if {'pop','y_true','regime'}.issubset(dbg.columns):
+              df = dbg.dropna(subset=['pop','y_true','regime']).copy()
+              for r,g in df.groupby('regime'):
+                  y = g['y_true'].astype(int).to_numpy()
+                  p = g['pop'].astype(float).to_numpy()
+                  for thr in np.linspace(0.50,0.80,31):
+                      pred = (p>=thr).astype(int)
+                      tp=int(((pred==1)&(y==1)).sum()); tn=int(((pred==0)&(y==0)).sum())
+                      fp=int(((pred==1)&(y==0)).sum()); fn=int(((pred==0)&(y==1)).sum())
+                      scan_rows.append({'regime':r,'thr':float(thr),'mcc':mcc(tp,tn,fp,fn),
+                                        'tpr':float(tp/max(1,tp+fn)), 'fpr':float(fp/max(1,fp+tn)),
+                                        'tp':tp,'tn':tn,'fp':fp,'fn':fn,'n':int(len(g))})
+          scan_df = pd.DataFrame(scan_rows)
+
+          # 3) Policy scale summary
+          pol = {}
+          for k in ['tp_bps_i','sl_bps_i','min_hold','max_hold']:
+              if k in dbg.columns:
+                  v = pd.to_numeric(dbg[k], errors='coerce')
+                  pol[k+'_mean']=float(v.mean())
+                  pol[k+'_p50']=float(v.quantile(0.5))
+                  pol[k+'_p90']=float(v.quantile(0.9))
+          report['policy_summary']=pol
+
+          calib_tbl.to_csv(OUTD/'calibration_bins.csv', index=False)
+          scan_df.to_csv(OUTD/'regime_threshold_scan.csv', index=False)
+          pd.DataFrame([report]).to_csv(OUTD/'policy_summary.csv', index=False)
+          json.dump({
+              'calibration_bins': calib_tbl.to_dict(orient='records'),
+              'regime_threshold_scan_top': scan_df.sort_values(['regime','mcc'], ascending=[True,False]).groupby('regime').head(5).to_dict(orient='records'),
+              'policy_summary': report['policy_summary'],
+              'calibration_rmse': report['calibration_rmse']
+          }, open(OUTD/'diagnostics.json','w'), ensure_ascii=False, indent=2)
+
+          print("=== DIAGNOSTICS ===")
+          print("calibration_rmse:", report['calibration_rmse'])
+          if not scan_df.empty:
+              top = scan_df.sort_values(['regime','mcc'], ascending=[True,False]).groupby('regime').head(1)
+              print("best_thr_by_regime:", top[['regime','thr','mcc']].to_dict(orient='records'))
+          else:
+              print("best_thr_by_regime: []")
+          print("policy_summary:", json.dumps(report['policy_summary']))
+          PY
+
+      - name: (2) Alignment — calibrate + set per-regime thresholds + align EV
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, json, pandas as pd, numpy as np, pickle, yaml, pathlib, sys
+          from sklearn.isotonic import IsotonicRegression
+
+          BASE = "_out_4u/run"
+          GJ   = os.path.join(BASE,"gating_debug.json")
+          OUTD = pathlib.Path("_out_4u"); OUTD.mkdir(parents=True, exist_ok=True)
+
+          # loader
+          def load_dbg(p):
+              if not (os.path.exists(p) and os.path.getsize(p)>0): return pd.DataFrame()
+              try: return pd.read_json(p)
+              except ValueError:
+                  try: return pd.read_json(p, lines=True)
+                  except: return pd.DataFrame()
+
+          dbg = load_dbg(GJ)
+          need = {'pop','y_true','regime'}
+          if not need.issubset(dbg.columns):
+              print("[SKIP] missing columns for alignment:", need - set(dbg.columns))
+              sys.exit(0)
+
+          if 'ts' in dbg.columns: dbg = dbg.sort_values('ts')
+          cut = int(len(dbg)*0.7)
+          train, valid = dbg.iloc[:cut].copy(), dbg.iloc[cut:].copy()
+
+          iso = IsotonicRegression(y_min=0, y_max=1, out_of_bounds='clip')
+          iso.fit(train['pop'].astype(float), train['y_true'].astype(int))
+          valid['pop_cal'] = iso.transform(valid['pop'].astype(float))
+
+          with open(OUTD/'calibrator_isotonic.pkl','wb') as f: pickle.dump(iso, f)
+          valid.to_json(OUTD/'calibrated_tail.json', orient='records')
+
+          def MCC(tp, tn, fp, fn):
+              num = tp*tn - fp*fn
+              den = ((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))**0.5
+              return float(num/den) if den>0 else 0.0
+
+          best = {}
+          rows = []
+          for r,g in valid.dropna(subset=['pop_cal','y_true','regime']).groupby('regime'):
+              y = g['y_true'].astype(int).to_numpy()
+              p = g['pop_cal'].astype(float).to_numpy()
+              best_m, best_thr = -1.0, 0.60
+              for thr in np.linspace(0.55,0.80,26):
+                  pred = (p>=thr).astype(int)
+                  tp=int(((pred==1)&(y==1)).sum()); tn=int(((pred==0)&(y==0)).sum())
+                  fp=int(((pred==1)&(y==0)).sum()); fn=int(((pred==0)&(y==1)).sum())
+                  m = MCC(tp,tn,fp,fn)
+                  rows.append({'regime':r,'thr':float(thr),'mcc':m,'tp':tp,'tn':tn,'fp':fp,'fn':fn,'n':int(len(g))})
+                  if m>best_m: best_m, best_thr = m, float(thr)
+              best[r] = best_thr
+
+          pd.DataFrame(rows).to_csv(OUTD/'alignment_threshold_scan.csv', index=False)
+
+          FF = "conf/feature_flags.yml"
+          y = yaml.safe_load(open(FF)) if os.path.exists(FF) else {}
+          y.setdefault('entry',{}); y['entry'].setdefault('p_thr',{})
+          y['entry']['p_thr'].update(best)
+          y.setdefault('ev',{})
+          y['ev']['p_ev_req'] = dict(y['entry']['p_thr'])
+
+          with open(FF,'w') as f: yaml.safe_dump(y, f, sort_keys=False)
+
+          print("=== ALIGNMENT ===")
+          print("p_thr_by_regime:", best)
+          print("[updated]", FF)
+          PY
+
+      - name: Re-run (post-alignment) and print summary
+        shell: bash
+        run: |
+          set -e
+          python backtest/runner_patched.py \
+            --data-root data \
+            --csv-glob "${{ inputs.CSV_GLOB }}" \
+            --params conf/params_champion.yml \
+            --flags conf/feature_flags.yml \
+            --outdir _out_4u/run \
+            --debug-level entries \
+            --limit-bars 250000 || true
+          python - <<'PY'
+          import os, json
+          s=json.load(open("_out_4u/run/summary.json")) if os.path.exists("_out_4u/run/summary.json") else {}
+          print("=== SUMMARY (post-align) ===")
+          print({k:s.get(k) for k in ["winrate","mcc","num_trades","cum_pnl_bps"]})
+          PY
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: backtest_v2_diag_align
+          path: |
+            _out_4u/diagnostics/diagnostics.json
+            _out_4u/diagnostics/calibration_bins.csv
+            _out_4u/diagnostics/regime_threshold_scan.csv
+            _out_4u/diagnostics/policy_summary.csv
+            _out_4u/alignment_threshold_scan.csv
+            _out_4u/calibrated_tail.json
+            _out_4u/calibrator_isotonic.pkl
+            conf/feature_flags.yml
+            _out_4u/run/summary.json
+            _out_4u/run/gating_debug.json
+            _out_4u/run/trades.csv
+            _out_4u/run/preds_test.csv
