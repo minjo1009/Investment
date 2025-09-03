@@ -3,6 +3,9 @@ name: BacktestV2-Validation
 on:
   workflow_dispatch:
     inputs:
+      GIT_REF:
+        description: 'branch/tag/SHA (e.g. codex/fix-yaml-syntax-error-in-workflow-h7x829)'
+        required: false
       DATA_ZIP:
         description: 'ZIP file with CSV data (e.g., ETHUSDT_1min_2020_2025.zip)'
         required: true
@@ -10,8 +13,11 @@ on:
         description: 'Glob pattern for CSV inside extracted data'
         required: true
         default: '*.csv'
-  workflow_call:              # ← 재사용으로 공개
+  workflow_call:
     inputs:
+      GIT_REF:
+        required: false
+        type: string
       DATA_ZIP:
         required: true
         type: string
@@ -23,8 +29,11 @@ jobs:
   backtest:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository (pinned)
+      - name: Checkout repository (exact ref, full history)
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ inputs.GIT_REF || github.ref || github.head_ref }}
+          fetch-depth: 0
 
       - name: Set up Python (pinned)
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
@@ -39,32 +48,61 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install -U pip
-          pip install pandas numpy scikit-learn pyyaml
+          # NOTE: divergence는 scipy.signal 사용, wavelet이면 PyWavelets 권장
+          pip install pandas numpy scikit-learn pyyaml scipy PyWavelets
 
       - name: Prepare dirs
         run: |
+          set -e
           install -d _in _out_4u/run data
 
       - name: Extract data zip
         run: |
+          set -e
           cp "${{ inputs.DATA_ZIP }}" _in/data.zip
           unzip -q -o _in/data.zip -d data
-          : > _out_4u/run/gating_debug.json
+          # gating_debug는 유효 JSON 배열로 초기화 (빈 파일 금지)
+          echo "[]" > _out_4u/run/gating_debug.json
 
       - name: Run backtest
+        shell: bash
         run: |
+          set -e
           python backtest/runner_patched.py \
             --data-root data \
             --csv-glob "${{ inputs.CSV_GLOB }}" \
             --params conf/params_champion.yml \
             --flags conf/feature_flags.yml \
             --outdir _out_4u/run \
+            --debug-level entries \
             --limit-bars 250000 || true
 
           base="_out_4u/run"
-          [ -f "$base/summary.json" ] || printf '{}' > "$base/summary.json"
-          [ -f "$base/preds_test.csv" ] || : > "$base/preds_test.csv"
-          [ -f "$base/trades.csv" ]     || : > "$base/trades.csv"
+          # 산출물 보장
+          [ -s "$base/summary.json" ] || printf '{}' > "$base/summary.json"
+          [ -s "$base/preds_test.csv" ] || : > "$base/preds_test.csv"
+          [ -s "$base/trades.csv" ]     || : > "$base/trades.csv"
+
+      - name: Backfill summary (num_trades / winrate if missing)
+        shell: bash
+        run: |
+          python - "$@" <<'PY'
+          import os, json, pandas as pd
+          base="_out_4u/run"
+          s={}
+          sj=os.path.join(base,"summary.json")
+          if os.path.exists(sj) and os.path.getsize(sj)>0:
+              try: s=json.load(open(sj))
+              except: s={}
+          tc=os.path.join(base,"trades.csv")
+          if os.path.exists(tc) and os.path.getsize(tc)>0:
+              tr=pd.read_csv(tc)
+              s.setdefault('num_trades', int(len(tr)))
+              if 'pnl_bps' in tr.columns:
+                  s.setdefault('winrate', float((tr['pnl_bps']>0).mean()))
+          json.dump(s, open(sj,'w'))
+          print("[summary]", s)
+          PY
 
       - name: Print summary (jq)
         run: |
@@ -81,9 +119,8 @@ jobs:
           base="_out_4u/run"; g="$base/gating_debug.json"
           echo "=== GATE COLUMNS PRESENT ==="
           if [ -s "$g" ]; then
-            jq -r '.[0] | keys
-              | map(select(. as $k | ["divergence","in_box","ofi_z","OFI_z","regime","size_frac"] | index($k)))
-              | unique | .[]' "$g" || echo "[]"
+            # ofi_z/OFI_z 케이스 보정, 핵심 필드 존재 확인
+            jq -r '.[0] | (keys // []) | map(select(. as $k | ["divergence","in_box","OFI_z","ofi_z","regime","size_frac","block_lv","mask_blk","p_ev_req","ev_bps","tp_bps_i","sl_bps_i","ADX","decision"] | index($k))) | unique | .[]' "$g" || echo "[]"
           else
             echo "[]"
           fi
