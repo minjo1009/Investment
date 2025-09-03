@@ -61,7 +61,6 @@ jobs:
           set -e
           cp "${{ inputs.DATA_ZIP }}" _in/data.zip
           python -c "import zipfile, os; z=zipfile.ZipFile('_in/data.zip'); z.extractall('data'); open('_out_4u/run/gating_debug.json','a').close()"
-
       - name: Optional code pack
         if: ${{ inputs.CODE_ZIP != '' }}
         run: |
