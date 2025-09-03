@@ -1,5 +1,5 @@
 import pandas as pd
-import importlib.machinery, importlib.util, sys, os
+import importlib.machinery, importlib.util, sys, os, re
 
 _cwd = os.path.abspath(os.getcwd())
 _search_paths = [p for p in sys.path if p and os.path.abspath(p) != _cwd]
@@ -24,19 +24,50 @@ def dedupe_columns(df: pd.DataFrame, keep: str="first") -> pd.DataFrame:
     return df
 
 
-class DuplicateKeyLoader(yaml.SafeLoader):
-    pass
+if hasattr(yaml, "SafeLoader") and hasattr(yaml, "load"):
+    class DuplicateKeyLoader(yaml.SafeLoader):
+        pass
 
-def _construct_mapping(loader, node, deep=False):
-    mapping = {}
-    for k_node, v_node in node.value:
-        k = loader.construct_object(k_node, deep=deep)
-        if k in mapping:
-            raise ValueError(f"YAML duplicate key detected: {k!r}")
-        mapping[k] = loader.construct_object(v_node, deep=deep)
-    return mapping
+    def _construct_mapping(loader, node, deep=False):
+        mapping = {}
+        for k_node, v_node in node.value:
+            k = loader.construct_object(k_node, deep=deep)
+            if k in mapping:
+                raise ValueError(f"YAML duplicate key detected: {k!r}")
+            mapping[k] = loader.construct_object(v_node, deep=deep)
+        return mapping
 
-DuplicateKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
+    DuplicateKeyLoader.add_constructor(
+        yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping
+    )
 
-def safe_load_no_dupe(stream):
-    return yaml.load(stream, Loader=DuplicateKeyLoader)
+    def safe_load_no_dupe(stream):
+        return yaml.load(stream, Loader=DuplicateKeyLoader)
+else:
+    def safe_load_no_dupe(stream):
+        if hasattr(stream, "read"):
+            text = stream.read()
+        else:
+            text = str(stream)
+
+        lines = []
+        for raw_line in text.splitlines():
+            line = re.sub(r"#.*", "", raw_line).rstrip()
+            if line:
+                indent = len(line) - len(line.lstrip())
+                lines.append((indent, line.lstrip()))
+
+        stack = [( -1, set())]
+        for indent, line in lines:
+            while stack and indent <= stack[-1][0]:
+                stack.pop()
+            if ":" in line:
+                key, rest = line.split(":", 1)
+                key = key.strip()
+                if key in stack[-1][1]:
+                    raise ValueError(f"YAML duplicate key detected: {key!r}")
+                stack[-1][1].add(key)
+                if not rest.strip():
+                    stack.append((indent, set()))
+
+        return yaml.safe_load(text)
