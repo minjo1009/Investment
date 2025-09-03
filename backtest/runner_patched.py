@@ -581,6 +581,16 @@ def main():
                 "OFI_z": float(df['ofi_z'].to_numpy()[i]), "ADX": float(adx[i]),
                 "be_armed": bool(be_armed), "decision": "enter"
             })
+            # forced evidence logging
+            _sz = (df['size_frac'].to_numpy() if 'size_frac' in df.columns else None)
+            gating_dbg[-1].update({
+                'in_box': bool(in_box[i]) if 'in_box' in locals() else None,
+                'block_lv': bool(block_lv[i]) if 'block_lv' in locals() else None,
+                'mask_blk': bool(mask_blk[i]) if 'mask_blk' in locals() else None,
+                'size_frac': (float(_sz[i]) if _sz is not None else None),
+                'denoise_applied': bool(((params.get('signal',{}) or {}).get('denoise',''))!=''),
+                'divergence': (str(df['divergence'].iloc[i]) if 'divergence' in df.columns else None)
+            })
 
         # hold until exit
         j = i + 1
@@ -613,6 +623,16 @@ def main():
                         "tp_bps_i": tp_cur, "sl_bps_i": sl_cur, "regime": str(regime[j]),
                         "OFI_z": float(df['ofi_z'].to_numpy()[j]), "ADX": float(adx[j]),
                         "be_armed": bool(be_armed), "decision": "exit"
+                    })
+                    # forced evidence logging
+                    _sz = (df['size_frac'].to_numpy() if 'size_frac' in df.columns else None)
+                    gating_dbg[-1].update({
+                        'in_box': bool(in_box[j]) if 'in_box' in locals() else None,
+                        'block_lv': bool(block_lv[j]) if 'block_lv' in locals() else None,
+                        'mask_blk': bool(mask_blk[j]) if 'mask_blk' in locals() else None,
+                        'size_frac': (float(_sz[j]) if _sz is not None else None),
+                        'denoise_applied': bool(((params.get('signal',{}) or {}).get('denoise',''))!=''),
+                        'divergence': (str(df['divergence'].iloc[j]) if 'divergence' in df.columns else None)
                     })
                 position = 0; entry_idx = -1; entry_px = 0.0
                 break
