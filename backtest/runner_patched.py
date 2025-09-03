@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """runner_patched.py — Strategy V2 wiring (OFI soft gate + dyn TP/SL)"""
-import os, sys, json, argparse, csv, math
+import os, sys, json, argparse, csv, math, zipfile
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import yaml
 from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype
+from backtest.utils.dedupe import safe_load_no_dupe, dedupe_columns
 
 
 def normalize_open_time(df: pd.DataFrame) -> pd.DataFrame:
@@ -109,7 +109,7 @@ except Exception:
 
 def load_yaml(p):
   with open(p, 'r', encoding='utf-8') as f:
-    return yaml.safe_load(f)
+    return safe_load_no_dupe(f)
 
 
 def true_range(h, l, pc):
@@ -168,24 +168,36 @@ def tag_session(ts_utc) -> str:
 
 def main():
   ap = argparse.ArgumentParser()
-  ap.add_argument('--data-root', required=True)
-  ap.add_argument('--csv-glob', required=True)
-  ap.add_argument('--params', required=True)
-  ap.add_argument('--outdir', required=True)
+  ap.add_argument('--params', default='conf/params_champion.yml')
   ap.add_argument('--calibrator', default=None)
+  ap.add_argument('--flags', default='conf/feature_flags.yml')
+  ap.add_argument('--data', default='ETHUSDT_1min_2020_2025.zip')
+  ap.add_argument('--outdir', default='out')
+  ap.add_argument('--start', default=None)
+  ap.add_argument('--end', default=None)
   args = ap.parse_args()
 
   params = load_yaml(args.params)
+  flags = load_yaml(args.flags) if args.flags and Path(args.flags).exists() else {}
 
-  paths = sorted(Path(args.data_root).glob(args.csv_glob))
-  if not paths:
-    raise SystemExit('no data files')
-  df = pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
+  with zipfile.ZipFile(args.data) as z:
+    csv_name = next(n for n in z.namelist() if n.endswith('.csv'))
+    with z.open(csv_name) as f:
+      df = pd.read_csv(f)
+
   if 'timestamp' in df.columns:
     df['open_time'] = df.pop('timestamp')
   df = ensure_ofi_columns(df)
   # open_time to UTC Timestamp conversion (vectorized)
   df = normalize_open_time(df)
+  df = dedupe_columns(df)
+  if args.start:
+    start_ts = pd.to_datetime(args.start, utc=True)
+    df = df[df['open_time'] >= start_ts]
+  if args.end:
+    end_ts = pd.to_datetime(args.end, utc=True)
+    df = df[df['open_time'] <= end_ts]
+  df = df.reset_index(drop=True)
 
   # MACD
   fast, slow, sig = 12, 26, 9
@@ -391,7 +403,7 @@ def main():
           position = 0
           entry_idx = -1
           entry_px = 0.0
-          dbg['decision'] = 'exit'
+          dbg['decision'] = 'exit_timeout' if time_exit and not (hit_tp or hit_sl) else 'exit'
         else:
           dbg['decision'] = 'hold'
       else:

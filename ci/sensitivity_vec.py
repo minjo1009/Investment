@@ -1,4 +1,5 @@
 import argparse, os, sys, runpy, zipfile, yaml, shutil
+from backtest.utils.dedupe import safe_load_no_dupe
 from pathlib import Path
 import pandas as pd
 
@@ -20,7 +21,7 @@ def ensure_codepack(codepack_zip, workdir):
     return out
 
 def patch_params(base_params_path, out_path, thr, hold):
-    d=yaml.safe_load(open(base_params_path,"r",encoding="utf-8")) or {}
+    d=safe_load_no_dupe(open(base_params_path,"r",encoding="utf-8")) or {}
     d.setdefault("entry",{}).setdefault("p_thr",{})
     d["entry"]["p_thr"]["trend"]=float(thr); d["entry"]["p_thr"]["range"]=float(thr)
     d.setdefault("exit",{}); d["exit"]["min_hold"]=int(hold)

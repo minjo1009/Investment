@@ -1,58 +1,42 @@
-import argparse
-import json
-from pathlib import Path
-
-import numpy as np
-import pandas as pd
+import pandas as pd, json, numpy as np, argparse
 from sklearn.isotonic import IsotonicRegression
 
+ap = argparse.ArgumentParser()
+ap.add_argument("--preds", required=True)
+ap.add_argument("--labels", required=True)
+ap.add_argument("--group-keys", default=None)  # "session,regime"
+ap.add_argument("--min-bin", type=int, default=100)
+ap.add_argument("--out", required=True)
+args = ap.parse_args()
 
-def fit_isotonic(x, y):
-  ir = IsotonicRegression(out_of_bounds='clip')
-  ir.fit(x, y)
-  xs = getattr(ir, 'X_thresholds_', getattr(ir, 'X_', None))
-  ys = getattr(ir, 'y_thresholds_', getattr(ir, 'y_', None))
-  return {'x': xs.tolist(), 'y': ys.tolist()}
+preds = pd.read_csv(args.preds)
+labels = pd.read_csv(args.labels)
+# 기대 컬럼: preds: ['open_time','p_raw','session','regime'] or ['p_trend'] 폴백
+p = preds["p_raw"] if "p_raw" in preds else preds[preds.columns[1]]
+labcol = "label" if "label" in preds else ("label" if "label" in labels else None)
+if labcol is None:
+  # trades.csv의 pnl_bps로 0/1 레이블 근사 (양수=1)
+  y = (labels["pnl_bps"] > 0).astype(int).reindex(preds.index, fill_value=0)
+else:
+  y = preds[labcol]
 
+def fit_iso(pp, yy):
+  iso = IsotonicRegression(out_of_bounds="clip").fit(pp.to_numpy(), yy.to_numpy())
+  xs = np.linspace(0,1,101)
+  ys = iso.predict(xs)
+  return {"xs": xs.tolist(), "ys": ys.tolist()}
 
-def main():
-  ap = argparse.ArgumentParser(description="Fit isotonic calibrator")
-  ap.add_argument("--preds", required=True, help="CSV with p_raw and session,regime and label columns")
-  ap.add_argument("--labels", help="optional labels CSV")
-  ap.add_argument('--horizon', type=int, default=5, help='label horizon in bars')
-  ap.add_argument('--out', default='conf/calibrator_isotonic.json', help='output JSON path')
-  ap.add_argument('--group-keys', default='session,regime', help='comma separated column names')
-  ap.add_argument('--min-bin', type=int, default=100)
-  args = ap.parse_args()
+def apply_grp(df):
+  return fit_iso(df["p"], df["y"])
 
-  df = pd.read_csv(args.preds)
-  if args.labels:
-    _ = args.labels
-  if 'p_raw' not in df.columns:
-    raise SystemExit('need p_raw column')
-  if 'label' in df.columns:
-    df['y'] = df['label']
-  if 'y' not in df.columns:
-    if 'close' in df.columns:
-      df['y'] = (df['close'].shift(-args.horizon) > df['close']).astype(float)
-    else:
-      raise SystemExit('need y or close column')
-  all_preds = df['p_raw'].astype(float).to_numpy()
-  all_labels = df['y'].astype(float).to_numpy()
-  models = {}
-  if args.group_keys:
-    keys = [k.strip() for k in args.group_keys.split(',') if k.strip()]
-    for key, g in df.groupby(keys):
-      if len(g) < args.min_bin:
-        continue
-      k = key if isinstance(key, str) else '_'.join(map(str, key))
-      models[k] = fit_isotonic(g['p_raw'].astype(float).to_numpy(), g['y'].astype(float).to_numpy())
-  models['_default'] = models.get('_default', fit_isotonic(all_preds, all_labels))
-  out_path = Path(args.out)
-  out_path.parent.mkdir(parents=True, exist_ok=True)
-  with open(out_path, 'w', encoding='utf-8') as f:
-    json.dump({'maps': models}, f, ensure_ascii=False, indent=2)
+maps = {"_default": fit_iso(p.clip(0,1), y)}
+if args.group_keys:
+  keys = [k.strip() for k in args.group_keys.split(",")]
+  if all(k in preds.columns for k in keys):
+    gb = preds.assign(p=p.clip(0,1), y=y).groupby(keys)
+    for k, g in gb:
+      if len(g) >= args.min_bin:
+        maps["_".join(map(str,k))] = apply_grp(g)
 
-
-if __name__ == '__main__':
-  main()
+json.dump({"maps": maps}, open(args.out, "w"))
+print(f"Saved calibrator to {args.out} with {len(maps)} maps.")

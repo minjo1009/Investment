@@ -1,71 +1,10 @@
-meta:
-  author: researchV2
-  updated_utc: fixed_for_runner
-objectives:
-  monthly_winrate_target: 0.70
-  monthly_return_target: 3.0
-  mcc_target: 0.70
-
-contracts:
-  data:
-    timeframe: 1min
-    timezone: UTC
-    symbol: ETHUSDT
-    required_columns: [timestamp, open, high, low, close, volume]
-    optional_columns: [number_of_trades, taker_buy_base_asset_volume]
-  metrics:
-    must_compute: [mcc, hit_rate, pnl]
-    report_files: [out/summary.json]
-
+name: strategy_v2
 components:
-  signal:
-    macd:
-      fast: 12
-      slow: 26
-      denoise: true
-    signal: 9
-    smoothing: { ema_span: 0 }
-    weights: { macd: 0.6, ofi: 0.4 }
-  regime:
-    atr: { n: 14, z_trend_min: 0.5 }
-  structure:
-    rolling_balance_avoid: { win_min: 60, tr_pctl_max: 25 }
-  orderflow:
-    ofi_align: { lookback: 12, z_min: 0.30 }
-  gating:
-    calibration:
-      method: isotonic
-      # target_pop: 0.72
-      # p_thr: { trend: 0.82, range: 0.86 }
-    conviction:
-      # persistence: { m: 5, k: 3 }
-      # ev_gate: { mode: probability, ev_margin_bps: 6, delta_p_min: 0.02 }
-      # hysteresis: { thr_entry: 0.88, thr_exit: 0.82 }
-      # reentry_reset: { swing_lookback: 10, require_break_of_extreme: true }
-  exits:
-    mode: dynamic_atr
-    atr:
-      n: 14
-      tp_mult: { trend: 2.5, range: 1.2 }
-      sl_mult: { trend: 1.0, range: 1.0 }
-      cap_bps: { tp_min: 20, tp_max: 180, sl_min: 10, sl_max: 90 }
-    min_hold: 8
-    max_hold: 60
-    breakeven_bps: 7
-  sizing:
-    position_fraction: 1.0
-    leverage_max: 3
-  costs:
-    fee_bps_per_side: 5
-    slippage_bps_per_side: 2
-    funding_bps_estimate: 0.5
-
-ops:
-  dynamic_tod_block: { lookback_days: 30, vol_pctl: 20 }
-
-artifacts:
-  must_produce:
-    - out/summary.json
-    - out/gating_debug.json
-    - out/preds_test.csv
-    - out/trades.csv
+  regime: {atr_len: 14, donchian_len: 20}
+  signal: {macd: [12,26,9], denoise: wavelet_l1}
+  ofi: {lookback: 12, z_min: 0.30}
+  costs: {fee_bps_side: 5, slip_bps_side: 2, funding_bps_rt: 0.5}
+  exit: {mode: dyn_atr}
+artifacts: [summary.json, gating_debug.json, preds_test.csv, trades.csv]
+notes: |
+  스펙은 구조만 정의. 문턱/게이팅 수치는 conf/params_champion.yml에서만 관리.
