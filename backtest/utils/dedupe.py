@@ -24,7 +24,7 @@ def dedupe_columns(df: pd.DataFrame, keep: str="first") -> pd.DataFrame:
     return df
 
 
-if hasattr(yaml, "SafeLoader") and hasattr(yaml, "load"):
+if all(hasattr(yaml, attr) for attr in ("SafeLoader", "load", "resolver")):
     class DuplicateKeyLoader(yaml.SafeLoader):
         pass
 

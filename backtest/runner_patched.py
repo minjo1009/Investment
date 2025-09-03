@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """runner_patched.py — Strategy V2 wiring (OFI soft gate + dyn TP/SL)"""
-import os, sys, json, argparse, csv, math, zipfile
+import os, sys, json, argparse, csv, math, zipfile, glob
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -171,7 +171,12 @@ def main():
   ap.add_argument('--params', default='conf/params_champion.yml')
   ap.add_argument('--calibrator', default=None)
   ap.add_argument('--flags', default='conf/feature_flags.yml')
-  ap.add_argument('--data', default='ETHUSDT_1min_2020_2025.zip')
+  ap.add_argument('--data', default='ETHUSDT_1min_2020_2025.zip',
+                  help='Path to zipped dataset containing a CSV (used if --data-root not provided)')
+  ap.add_argument('--data-root', default=None,
+                  help='Directory containing CSV files (searched when provided)')
+  ap.add_argument('--csv-glob', default=None,
+                  help='Glob pattern to match CSV within --data-root')
   ap.add_argument('--outdir', default='out')
   ap.add_argument('--start', default=None)
   ap.add_argument('--end', default=None)
@@ -180,10 +185,19 @@ def main():
   params = load_yaml(args.params)
   flags = load_yaml(args.flags) if args.flags and Path(args.flags).exists() else {}
 
-  with zipfile.ZipFile(args.data) as z:
-    csv_name = next(n for n in z.namelist() if n.endswith('.csv'))
-    with z.open(csv_name) as f:
-      df = pd.read_csv(f)
+  if args.data_root:
+    pattern = args.csv_glob or '*.csv'
+    matches = [p for p in glob.glob(str(Path(args.data_root)/'**'/'*.csv'), recursive=True)
+               if glob.fnmatch.fnmatch(Path(p).name, pattern)]
+    if not matches:
+      raise SystemExit(f'No CSV matched: {pattern}')
+    csv_path = matches[0]
+    df = pd.read_csv(csv_path)
+  else:
+    with zipfile.ZipFile(args.data) as z:
+      csv_name = next(n for n in z.namelist() if n.endswith('.csv'))
+      with z.open(csv_name) as f:
+        df = pd.read_csv(f)
 
   if 'timestamp' in df.columns:
     df['open_time'] = df.pop('timestamp')
