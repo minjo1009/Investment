@@ -1,0 +1,34 @@
+name: Backtest and Calibrate
+on:
+  push:
+  pull_request:
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Run backtest
+        run: |
+          python backtest/runner_patched.py --data-root data --csv-glob ETHUSDT_1min_2020_2025.csv --params conf/params_champion.yml --outdir out
+      - name: Calibrate offline
+        run: |
+          python tools/calibrate_offline.py --preds out/preds_test.csv --outdir out
+      - name: Rerun with calibrator
+        run: |
+          python backtest/runner_patched.py --data-root data --csv-glob ETHUSDT_1min_2020_2025.csv --params conf/params_champion.yml --outdir out --calibrator out/calibrator.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backtest-artifacts
+          path: |
+            out/reliability.png
+            out/ece.json
+            out/brier.json
+            out/gating_debug.json
+            out/summary.json

@@ -3,9 +3,9 @@ meta:
   position_fraction: 1.0
   allow_short: false
   maker_taker: taker
-  fee_bps_side: 5
-  slip_bps_side: 2
-  funding_bps_rt: 0.5
+  fee_bps_per_side: 10
+  slippage_bps_per_side: 2
+  funding_bps_estimate: 0.5
 
 entry:
   p_thr:
