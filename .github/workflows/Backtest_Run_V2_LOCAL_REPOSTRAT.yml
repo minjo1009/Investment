@@ -80,9 +80,9 @@ jobs:
             CAL_OPT=""; if [ -f "$CALIB_JSON" ]; then CAL_OPT="--calibrator $CALIB_JSON"; fi
             install -d "out/${{ inputs.OUTDIR }}"
             if [ -n "$MODE_OPT" ]; then
-              python "$RUNNER" $MODE_OPT --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" --limit-bars 300000 --debug-level entries --no-preds $CAL_OPT
+              python "$RUNNER" $MODE_OPT --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" --limit-bars 300000 --debug-level entries $CAL_OPT
             else
-              python "$RUNNER" --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" --limit-bars 300000 --debug-level entries --no-preds $CAL_OPT
+              python "$RUNNER" --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" --limit-bars 300000 --debug-level entries $CAL_OPT
             fi
 
       - name: Calibrator bins fallback
