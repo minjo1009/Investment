@@ -7,9 +7,17 @@ on:
         description: 'ZIP file with CSV data (e.g., ETHUSDT_1min_2020_2025.zip)'
         required: true
       CSV_GLOB:
-        description: 'Glob pattern for CSV inside extracted data (e.g., ETHUSDT_1min_*.csv)'
+        description: 'Glob pattern for CSV inside extracted data'
         required: true
         default: '*.csv'
+  workflow_call:              # ← 재사용으로 공개
+    inputs:
+      DATA_ZIP:
+        required: true
+        type: string
+      CSV_GLOB:
+        required: true
+        type: string
 
 jobs:
   backtest:
@@ -24,38 +32,27 @@ jobs:
           python-version: '3.11'
 
       - name: Install system tools
-        shell: bash
         run: |
-          set -e
           sudo apt-get update -y
           sudo apt-get install -y jq unzip
 
       - name: Install Python deps
-        shell: bash
         run: |
-          set -e
           python -m pip install -U pip
           pip install pandas numpy scikit-learn pyyaml
 
       - name: Prepare dirs
-        shell: bash
         run: |
-          set -e
           install -d _in _out_4u/run data
 
       - name: Extract data zip
-        shell: bash
         run: |
-          set -e
           cp "${{ inputs.DATA_ZIP }}" _in/data.zip
           unzip -q -o _in/data.zip -d data
-          # ensure gating_debug.json exists even if runner skips writing
           : > _out_4u/run/gating_debug.json
 
       - name: Run backtest
-        shell: bash
         run: |
-          set -e
           python backtest/runner_patched.py \
             --data-root data \
             --csv-glob "${{ inputs.CSV_GLOB }}" \
@@ -64,42 +61,29 @@ jobs:
             --outdir _out_4u/run \
             --limit-bars 250000 || true
 
-          # guarantee artifacts to avoid downstream errors
           base="_out_4u/run"
           [ -f "$base/summary.json" ] || printf '{}' > "$base/summary.json"
           [ -f "$base/preds_test.csv" ] || : > "$base/preds_test.csv"
           [ -f "$base/trades.csv" ]     || : > "$base/trades.csv"
 
-      - name: Print summary metrics (jq)
-        shell: bash
+      - name: Print summary (jq)
         run: |
-          set -e
           base="_out_4u/run"
           echo "=== SUMMARY ==="
           if [ -s "$base/summary.json" ]; then
-            jq -r '{
-              winrate: .winrate,
-              mcc: .mcc,
-              num_trades: .num_trades,
-              cum_pnl_bps: .cum_pnl_bps
-            }' "$base/summary.json"
+            jq -r '{winrate:.winrate,mcc:.mcc,num_trades:.num_trades,cum_pnl_bps:.cum_pnl_bps}' "$base/summary.json"
           else
             echo '{"winrate":null,"mcc":null,"num_trades":null,"cum_pnl_bps":null}'
           fi
 
-      - name: Check gate columns (jq)
-        shell: bash
+      - name: Gate columns (jq)
         run: |
-          set -e
-          base="_out_4u/run"
-          g="$base/gating_debug.json"
+          base="_out_4u/run"; g="$base/gating_debug.json"
           echo "=== GATE COLUMNS PRESENT ==="
           if [ -s "$g" ]; then
-            # keys from first record ∩ wanted columns (case variants for OFI)
             jq -r '.[0] | keys
               | map(select(. as $k | ["divergence","in_box","ofi_z","OFI_z","regime","size_frac"] | index($k)))
-              | unique
-              | .[]' "$g" || echo "[]"
+              | unique | .[]' "$g" || echo "[]"
           else
             echo "[]"
           fi
