@@ -4,16 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       DATA_ZIP:
-        description: 'ZIP file containing CSV data (default: ETHUSDT_1min_2020_2025.zip)'
-        required: false
-        default: 'ETHUSDT_1min_2020_2025.zip'
+        description: 'ZIP file containing CSV data (e.g., ETHUSDT_1min_2020_2025.zip)'
+        required: true
       CSV_GLOB:
         description: 'Glob pattern for CSV inside data folder'
-        required: false
+        required: true
         default: '*.csv'
-
-env:
-  PYTHON_VERSION: '3.11'
 
 jobs:
   backtest:
@@ -25,25 +21,28 @@ jobs:
       - name: Set up Python (pinned)
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: '3.11'
 
       - name: Install dependencies
+        shell: bash
         run: |
           set -e
           python -m pip install -U pip
           pip install pandas numpy scikit-learn pyyaml
 
       - name: Prepare directories
+        shell: bash
         run: |
           set -e
           install -d _in _out_4u/run data
 
       - name: Extract data zip
+        shell: bash
         run: |
           set -e
           cp "${{ inputs.DATA_ZIP }}" _in/data.zip
           python -c "import zipfile; zipfile.ZipFile('_in/data.zip').extractall('data')"
-          mkdir -p _out_4u/run
+          # ensure gating_debug.json exists (even if runner doesn't write it)
           : > _out_4u/run/gating_debug.json
 
       - name: Run backtest
@@ -57,25 +56,28 @@ jobs:
             --flags conf/feature_flags.yml \
             --outdir _out_4u/run \
             --limit-bars 250000 || true
-          python -c "import json,os; base='_out_4u/run'; \
-p=f'{base}/summary.json'; \
-open(p,'a').close() if os.path.exists(p) else open(p,'w').write('{}'); \
-open(f'{base}/preds_test.csv','a').close(); \
-open(f'{base}/trades.csv','a').close()"
 
-      - name: Print summary metrics and gate columns
+          # Guarantee summary / preds / trades exist to avoid downstream errors
+          base="_out_4u/run"
+          [ -f "$base/summary.json" ] || printf '{}' > "$base/summary.json"
+          [ -f "$base/preds_test.csv" ] || : > "$base/preds_test.csv"
+          [ -f "$base/trades.csv" ]     || : > "$base/trades.csv"
+
+      - name: Print summary metrics
         shell: bash
         run: |
-          python -c "import json,os; base='_out_4u/run'; s={}; \
-p=f'{base}/summary.json'; \
+          python -c "import json,os; b='_out_4u/run'; p=b+'/summary.json'; s={}; \
 s=json.load(open(p)) if os.path.exists(p) and os.path.getsize(p)>0 else {}; \
 print('=== SUMMARY ==='); \
 print({'winrate': s.get('winrate'), 'mcc': s.get('mcc'), 'num_trades': s.get('num_trades'), 'cum_pnl_bps': s.get('cum_pnl_bps')})"
-          python -c "import os,pandas as pd; base='_out_4u/run'; g=f'{base}/gating_debug.json'; \
+
+      - name: Check gate columns (divergence / in_box / ofi_z / regime / size_frac)
+        shell: bash
+        run: |
+          python -c "import os,pandas as pd; b='_out_4u/run'; g=b+'/gating_debug.json'; \
 print('=== GATE COLUMNS PRESENT ==='); \
-import sys; \
-print([]) if (not os.path.exists(g) or os.path.getsize(g)==0) else \
-(print([c for c in ['divergence','in_box','ofi_z','regime','size_frac'] if c in pd.read_json(g,typ='list').columns]))"
+print([] if (not os.path.exists(g) or os.path.getsize(g)==0) else \
+[c for c in ['divergence','in_box','ofi_z','regime','size_frac'] if c in pd.read_json(g,typ='list').columns])"
 
       - name: Upload artifacts (pinned)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
