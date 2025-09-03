@@ -6,6 +6,20 @@ meta:
   fee_bps_per_side: 10
   slippage_bps_per_side: 2
   funding_bps_estimate: 0.5
+signal:
+  denoise: wavelet_l1
+sizing:
+  use_conviction_scaled: true
+  floor: 0.30
+  ceil: 1.00
+session_blacklist:
+  ASIA: ["00:05-00:30"]
+  US: ["13:28-13:35"]
+structure:
+  levels_gate:
+    enabled: true
+    lookback_bars: 1440
+    avoid_near_extreme_bps: 12.0
 entry:
   p_thr:
     trend: 0.8
@@ -38,13 +52,15 @@ exit:
       tp_min: 10
       tp_max: 400
       sl_min: 8
-      sl_max: 220
+    sl_max: 220
   min_hold: 8
   max_hold: 60
   breakeven_bps: 7
   cooldown: 5
   tp_bps: 38
   sl_bps: 22
+  trend_trail_step_bps: 8
+  range_timeout_bars: 24
 regime:
   detector:
     atr_len: 14

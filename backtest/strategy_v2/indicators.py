@@ -1,6 +1,19 @@
 import numpy as np
 import pandas as pd
 
+def wavelet_denoise_safe(x, level=1, mode="symmetric"):
+  import numpy as np
+  try:
+    import pywt
+  except Exception:
+    return x
+  arr = np.asarray(x, dtype=float)
+  coeffs = pywt.wavedec(arr, "db2", mode=mode)
+  sigma = np.nanstd(arr) if np.isfinite(arr).any() else 0.0
+  coeffs[1:] = [pywt.threshold(c, value=sigma, mode="soft") for c in coeffs[1:]]
+  out = pywt.waverec(coeffs, "db2", mode=mode)
+  return np.asarray(out, dtype=float)[:len(arr)]
+
 def atr_1m(df: pd.DataFrame, n: int = 14) -> pd.Series:
   h, l, c = df["high"], df["low"], df["close"]
   tr = np.maximum(h - l, np.maximum(np.abs(h - c.shift()), np.abs(l - c.shift())))

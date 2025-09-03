@@ -18,6 +18,9 @@ from trend4u.calib.quantile_map import QuantileMap
 from trend4u.calib import drift as drift
 
 from backtest.strategy_v2 import Frictions, ofi_conf_alignment, soft_gate_adjustments  # keep single import to avoid circulars
+from backtest.strategy_v2.indicators import wavelet_denoise_safe
+from backtest.strategy_v2.divergence import macd_divergence
+from backtest.strategy_v2.sizing import conviction_scaled_size
 
 # ---------- timestamp auto-normalization (safe, light) ----------
 try:
@@ -175,6 +178,12 @@ def main():
     V = df['volume'].astype(float).to_numpy()
     n = len(df)
 
+    if (params.get("signal", {}) or {}).get("denoise") == "wavelet_l1":
+        try:
+            C = wavelet_denoise_safe(C)
+        except Exception:
+            pass
+
     try:
         df['ofi_conf'] = ofi_conf_alignment(df)['OFI_conf'].to_numpy()
     except Exception:
@@ -190,6 +199,17 @@ def main():
     macd_signal = macd.ewm(span=m_sign, adjust=False).mean()
     macd_diff = (macd - macd_signal).to_numpy()
     side = np.sign(macd_diff).astype(int)
+
+    try:
+        div = macd_divergence(pd.Series(C), pd.Series(macd_diff))
+        div = np.asarray(div)
+        block_long  = (div == "bear")
+        block_short = (div == "bull")
+        side = np.where((side > 0) & (~block_long),  1,
+               np.where((side < 0) & (~block_short), -1, 0))
+        df["divergence"] = div
+    except Exception:
+        df["divergence"] = "none"
 
     # ---------- OFI (vector) ----------
     eps = 1e-9
@@ -238,6 +258,22 @@ def main():
     trend_raw = (z >= z_trend_min) & (adx >= adx_thr)
     trend_persist = pd.Series(trend_raw.astype(int)).rolling(adx_persist, min_periods=1).sum().to_numpy()
     regime = np.where(trend_persist >= adx_persist, 'trend', 'range')
+
+    st = (params.get("structure", {}) or {})
+    lv = (st.get("levels_gate", {}) or {})
+    use_lv  = bool(lv.get("enabled", False))
+    win_bar = int(lv.get("lookback_bars", 1440))
+    thr_bps = float(lv.get("avoid_near_extreme_bps", 12.0))
+    if use_lv:
+        pdh = pd.Series(H).rolling(win_bar, min_periods=win_bar).max().to_numpy()
+        pdl = pd.Series(L).rolling(win_bar, min_periods=win_bar).min().to_numpy()
+        dist_hi_bps = (pdh / C - 1.0) * 10000.0
+        dist_lo_bps = (1.0 - pdl / C) * 10000.0
+        near_hi = np.isfinite(dist_hi_bps) & (dist_hi_bps <= thr_bps)
+        near_lo = np.isfinite(dist_lo_bps) & (dist_lo_bps <= thr_bps)
+        block_lv = ((regime == "trend") & ((side > 0) & near_hi | (side < 0) & near_lo))
+    else:
+        block_lv = np.zeros(len(C), dtype=bool)
 
     # ---------- Persistence m/k (vector) ----------
     conv = (((spec.get('components', {}) or {}).get('gating', {}) or {}).get('conviction', {}) or {})
@@ -391,6 +427,20 @@ def main():
 
     df['p_trend'] = p_trend
 
+    if (params.get("sizing", {}) or {}).get("use_conviction_scaled", False):
+        try:
+            size_frac = conviction_scaled_size(
+                params["meta"].get("position_fraction", 1.0),
+                pop=p_trend,
+                floor=float(params["sizing"].get("floor", 0.3)),
+                ceil=float(params["sizing"].get("ceil", 1.0))
+            )
+        except Exception:
+            size_frac = params["meta"].get("position_fraction", 1.0)
+    else:
+        size_frac = params["meta"].get("position_fraction", 1.0)
+    df["size_frac"] = (size_frac if np.ndim(size_frac) else np.full(len(df), float(size_frac)))
+
     # ---------- Dynamic ATR exits (vector arrays) ----------
     ex = (params.get('exit', {}) or {})
     ex_mode = str(ex.get('mode','fixed')).lower()
@@ -462,8 +512,32 @@ def main():
     ofi_mag_ok = (df['ofi_z'].to_numpy() >= z_min)
     ofi_ok = (ofi_dir_ok & ofi_mag_ok)
 
+    def make_session_blacklist_mask(df, blconf):
+        import numpy as np
+        if "session" not in df.columns: return np.zeros(len(df), dtype=bool)
+        times = (df.index.strftime("%H:%M") if hasattr(df.index, "strftime")
+                 else df.get("time", pd.Series(["00:00"]*len(df))).astype(str))
+        sess  = df["session"].astype(str)
+        m = np.zeros(len(df), dtype=bool)
+        for s, ranges in (blconf or {}).items():
+            loc = (sess == s)
+            if not np.any(loc): continue
+            tsub = times[loc]
+            mm = np.zeros(tsub.shape[0], dtype=bool)
+            for r in (ranges or []):
+                a, b = str(r).split("-")
+                mm |= ((tsub >= a) & (tsub <= b))
+            m[loc] |= mm
+        return m
+
+    bl = params.get("session_blacklist", {})
+    if bl:
+        mask_blk = make_session_blacklist_mask(df, bl)
+    else:
+        mask_blk = np.zeros(len(df), dtype=bool)
+
     # ---------- Entry mask (vector) ----------
-    mask_entry = (side != 0) & (~in_box) & ofi_ok & passed_persist & passed_calib & passed_ev
+    mask_entry = (side != 0) & (~in_box) & (~mask_blk) & (~block_lv) & ofi_ok & passed_persist & passed_calib & passed_ev
     cand_idx = np.flatnonzero(mask_entry)
     reason_counts = {
         'side': int((side==0).sum()),
@@ -518,6 +592,14 @@ def main():
             hit_tp = pnl_bps >= tp_cur
             hit_sl = pnl_bps <= (0.0 if be_armed else -sl_cur)
             time_exit = held >= max_hold
+            if regime[j] == "trend":
+                step_bps = float((params.get("exit", {}) or {}).get("trend_trail_step_bps", 8))
+                if pnl_bps > step_bps:
+                    sl_cur = min(tp_cur * 0.8, pnl_bps - step_bps)
+                    hit_sl = pnl_bps <= (0.0 if be_armed else -sl_cur)
+            else:
+                rng_to = int((params.get("exit", {}) or {}).get("range_timeout_bars", 24))
+                time_exit = time_exit or (held >= rng_to)
             if hit_tp or hit_sl or time_exit or (held < min_hold and hit_sl):
                 trades.append({
                     "entry_idx": entry_idx, "exit_idx": int(j), "side": int(position),
