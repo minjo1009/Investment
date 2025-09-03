@@ -1,0 +1,38 @@
+name: backtest-and-calib
+on:
+  push:
+  pull_request:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Step1 run
+        run: |
+          python backtest/runner_patched.py --data-root . --csv-glob 'ETHUSDT_1min_2020_2025.csv' --params conf/params_champion.yml --outdir out1 || true
+      - name: Step2 calibrate
+        run: |
+          python tools/calibrate_offline.py --preds out1/preds_test.csv --outdir out_cal
+      - name: Step3 run calibrated
+        run: |
+          python backtest/runner_patched.py --data-root . --csv-glob 'ETHUSDT_1min_2020_2025.csv' --params conf/params_champion.yml --calibrator out_cal/calibrator.json --outdir out2 || true
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest
+          path: |
+            out_cal/reliability.png
+            out_cal/ece.json
+            out_cal/brier.json
+            out2/gating_debug.json
+            out2/summary.json

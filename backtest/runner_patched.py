@@ -166,15 +166,50 @@ def main():
     in_box = tr <= np.nan_to_num(thr_q, nan=np.inf)
     df['in_box'] = in_box
 
-    # ---------- Regime (vector) ----------
-    rg_cfg = (((spec.get('components', {}) or {}).get('regime', {}) or {}).get('atr', {}) or {})
-    atr_n = int(rg_cfg.get('n', 14))
-    z_trend_min = float(rg_cfg.get('z_trend_min', 0.0))
+    # ---------- Regime (ATR_z + ADX mixture) ----------
+    rg = ((spec.get('components', {}) or {}).get('regime', {}) or {})
+    rg_atr = (rg.get('atr', {}) or {})
+    rg_adx = (rg.get('adx', {}) or {})
+    atr_n = int(rg_atr.get('n', 14))
+    z_trend_min = float(rg_atr.get('z_trend_min', 0.0))
     atr = pd.Series(tr).rolling(atr_n, min_periods=atr_n).mean()
     mu  = atr.rolling(atr_n*5, min_periods=atr_n).mean()
     sd  = atr.rolling(atr_n*5, min_periods=atr_n).std()
     z   = ((atr - mu) / (sd + 1e-12)).to_numpy()
-    regime = np.where(z >= z_trend_min, 'trend', 'range')
+
+    adx_n = int(rg_adx.get('n', 14))
+    adx_thr = float(rg_adx.get('thr', 22.0))
+    min_persist = int(rg_adx.get('min_persist', 1))
+    up = np.r_[0.0, np.diff(H)]
+    down = np.r_[0.0, -np.diff(L)]
+    plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+    minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+    tr_s = pd.Series(tr)
+    atr_adx = tr_s.ewm(span=adx_n, adjust=False).mean()
+    p_di = (pd.Series(plus_dm).ewm(span=adx_n, adjust=False).mean() / atr_adx).to_numpy() * 100.0
+    m_di = (pd.Series(minus_dm).ewm(span=adx_n, adjust=False).mean() / atr_adx).to_numpy() * 100.0
+    dx = (np.abs(p_di - m_di) / (p_di + m_di + 1e-9)) * 100.0
+    adx = pd.Series(dx).ewm(span=adx_n, adjust=False).mean().to_numpy()
+
+    regime_raw = np.where((z >= z_trend_min) & (adx >= adx_thr), 'trend', 'range')
+    regime = regime_raw.copy()
+    last = regime[0]
+    run = 1
+    for i in range(1, n):
+        if regime_raw[i] == last:
+            run += 1
+        else:
+            # check persistence of new regime
+            j = i
+            while j < n and regime_raw[j] == regime_raw[i]:
+                j += 1
+            if (j - i) < min_persist:
+                regime[i:j] = last
+            else:
+                last = regime_raw[i]
+                regime[i:j] = regime_raw[i]
+            run = 1
+    df['adx'] = adx
 
     # ---------- Persistence m/k (vector) ----------
     conv = (((spec.get('components', {}) or {}).get('gating', {}) or {}).get('conviction', {}) or {})
@@ -323,6 +358,7 @@ def main():
                 "i": int(i), "side": int(position), "pop": float(p_trend[i]),
                 "p_ev_req": float(p_ev_req[i]), "ev_bps": float(p_trend[i]*tp_cur - (1.0-p_trend[i])*sl_cur - frictions_bps),
                 "tp_bps_i": tp_cur, "sl_bps_i": sl_cur, "regime": str(regime[i]),
+                "OFI_z": float(df['ofi_z'].to_numpy()[i]), "ADX": float(adx[i]),
                 "be_armed": bool(be_armed), "decision": "enter"
             })
 
@@ -346,6 +382,7 @@ def main():
                         "i": int(j), "side": int(position), "pop": float(p_trend[j]),
                         "p_ev_req": float(p_ev_req[j]), "ev_bps": float(p_trend[j]*tp_cur - (1.0-p_trend[j])*sl_cur - frictions_bps),
                         "tp_bps_i": tp_cur, "sl_bps_i": sl_cur, "regime": str(regime[j]),
+                        "OFI_z": float(df['ofi_z'].to_numpy()[j]), "ADX": float(adx[j]),
                         "be_armed": bool(be_armed), "decision": "exit"
                     })
                 position = 0; entry_idx = -1; entry_px = 0.0
@@ -366,6 +403,21 @@ def main():
         summary = {"n_trades": int(len(trades)), "hit_rate": hit_rate, "mcc": mcc, "cum_pnl_bps": float(pnl.sum())}
     else:
         summary = {"n_trades": 0, "hit_rate": 0.0, "mcc": mcc, "cum_pnl_bps": 0.0}
+
+    if args.calibrator:
+        caldir = Path(args.calibrator).parent
+        for name, key in [("ece.json", "ece"), ("brier.json", "brier")]:
+            pth = caldir / name
+            if pth.exists():
+                try:
+                    j = json.load(open(pth, "r", encoding="utf-8"))
+                    val = j.get("value") if isinstance(j, dict) else None
+                    if val is None and isinstance(j, dict):
+                        val = j.get(key)
+                    if val is not None:
+                        summary[key] = float(val)
+                except Exception:
+                    pass
 
     # ---------- Save artifacts ----------
     # trades
