@@ -103,6 +103,33 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
+    # ensure arrays strictly ascending & unique
+    try:
+        if isinstance(best, dict) and 'maps' in best:
+            sec = best['maps'].get('_default', {})
+            xs = np.array(sec.get('x', []), dtype=float)
+            ys = np.array(sec.get('y', []), dtype=float)
+            if xs.size and ys.size:
+                order = np.argsort(xs)
+                xs, ys = xs[order], ys[order]
+                _, idx = np.unique(xs, return_index=True)
+                xs, ys = xs[idx], ys[idx]
+                sec['x'] = xs.tolist()
+                sec['y'] = ys.tolist()
+                best['maps']['_default'] = sec
+        else:
+            xs = np.array(best.get('X_', []), dtype=float)
+            ys = np.array(best.get('y_', []), dtype=float)
+            if xs.size and ys.size:
+                order = np.argsort(xs)
+                xs, ys = xs[order], ys[order]
+                _, idx = np.unique(xs, return_index=True)
+                xs, ys = xs[idx], ys[idx]
+                best['X_'] = xs.tolist()
+                best['y_'] = ys.tolist()
+    except Exception:
+        pass
+
     tmp = outdir / 'calibrator.json.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(best, f)

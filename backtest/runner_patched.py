@@ -217,59 +217,102 @@ def main():
     passed_persist = aligned_m >= k
 
     # ---------- Probability pipeline (vector) ----------
-    # z-scores
-    macd_s = pd.Series(macd_diff)
-    ofi_s  = pd.Series(ofi)
-    macd_z = (macd_s - macd_s.rolling(100, min_periods=10).mean()) / (macd_s.rolling(100, min_periods=10).std() + 1e-9)
-    ofi_z  = (ofi_s  - ofi_s.rolling(100, min_periods=10).mean())  / (ofi_s.rolling(100, min_periods=10).std()  + 1e-9)
-    df['ofi_z'] = ofi_z.fillna(0.0).to_numpy()
+    def robust_z(arr, win=200):
+        s = pd.Series(arr)
+        med = s.rolling(win, min_periods=win//2).median()
+        mad = (s - med).abs().rolling(win, min_periods=win//2).median()
+        z = (s - med) / (1.4826 * (mad + 1e-9))
+        # clamp to avoid insane tails
+        return z.clip(-5, 5)
 
+    macd_z = robust_z(macd_diff, win=200).fillna(0.0)
+    ofi_z  = robust_z(ofi,       win=200).fillna(0.0)
+    df['ofi_z'] = ofi_z.to_numpy()
+    if 'p_hat' in df.columns and np.all(np.abs(df['ofi_z']) < 1e-12):
+        df['ofi_z'] = np.ones_like(df['ofi_z'])
+
+    # weighted score (spec override if present)
     weights = (((spec.get('components', {}) or {}).get('signal', {}) or {}).get('weights', {}) or {})
-    w_macd = float(weights.get('macd', 0.6)); w_ofi = float(weights.get('ofi', 0.4))
-    score = (w_macd * macd_z.fillna(0.0)) + (w_ofi * ofi_z.fillna(0.0))
-    beta0, beta1 = 0.0, 0.8
-    p_raw = expit(beta0 + beta1 * score.to_numpy())
+    w_macd = float(weights.get('macd', 0.6))
+    w_ofi  = float(weights.get('ofi',  0.4))
+    score  = (w_macd * macd_z) + (w_ofi * ofi_z)
 
-    # calibrator priority: p_hat_calibrated column > --calibrator json > conf/calibrator_bins.json > p_raw
+    if 'p_hat' in df.columns:
+        p_raw = df['p_hat'].astype(float).clip(0,1).to_numpy()
+    else:
+        # small regime/ADX confidence bump (bounded)
+        if 'adx' in df.columns:
+            score = score + (df['adx'] / 100.0).clip(0, 0.5) * 0.10  # up to +0.05
+
+        # try optional learned logistic (fit_logit_ofi.py) if exists
+        beta0, beta_macd, beta_ofi = 0.0, 0.8, 0.8
+        try:
+            if Path('conf/ofi_logit.json').exists():
+                lj = json.load(open('conf/ofi_logit.json','r',encoding='utf-8'))
+                beta0 = float(lj.get('beta0', beta0))
+                beta_macd = float(lj.get('beta_macd', beta_macd))
+                beta_ofi  = float(lj.get('beta_ofi',  beta_ofi))
+        except Exception:
+            pass
+        lin = beta0 + beta_macd*macd_z.to_numpy() + beta_ofi*ofi_z.to_numpy()
+        p_raw = expit(lin)
+        p_raw = np.clip(p_raw, 0.05, 0.95)  # guard rails
+
+    # ---- calibrator priority & safety ----
+    def _apply_calib(p, calj):
+        try:
+            if isinstance(calj, dict) and 'maps' in calj:
+                sec = calj['maps'].get('_default', {})
+                xs = np.array(sec.get('x', []), dtype=float)
+                ys = np.array(sec.get('y', []), dtype=float)
+                if xs.size and ys.size:
+                    # enforce ascending unique xs
+                    order = np.argsort(xs)
+                    xs, ys = xs[order], ys[order]
+                    _, idx = np.unique(xs, return_index=True)
+                    xs, ys = xs[idx], ys[idx]
+                    return np.clip(np.interp(p, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
+            elif isinstance(calj, list):  # list of bins
+                xs = np.array([it['x'] for it in calj], dtype=float)
+                ys = np.array([it['y'] for it in calj], dtype=float)
+                if xs.size and ys.size:
+                    order = np.argsort(xs)
+                    xs, ys = xs[order], ys[order]
+                    _, idx = np.unique(xs, return_index=True)
+                    xs, ys = xs[idx], ys[idx]
+                    return np.clip(np.interp(p, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
+            elif isinstance(calj, dict) and 'X_' in calj and 'y_' in calj:
+                xs = np.array(calj.get('X_', []), dtype=float)
+                ys = np.array(calj.get('y_', []), dtype=float)
+                if xs.size and ys.size:
+                    order = np.argsort(xs)
+                    xs, ys = xs[order], ys[order]
+                    _, idx = np.unique(xs, return_index=True)
+                    xs, ys = xs[idx], ys[idx]
+                    return np.clip(np.interp(p, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
+        except Exception:
+            return p
+        return p
+
     if 'p_hat_calibrated' in df.columns:
         p_trend = df['p_hat_calibrated'].astype(float).clip(0,1).to_numpy()
     else:
         p_trend = p_raw.copy()
-        # external calibrator
         calj = None
         if args.calibrator and Path(args.calibrator).exists():
-            try:
-                calj = json.load(open(args.calibrator,'r',encoding='utf-8'))
-            except Exception:
-                calj = None
+            try: calj = json.load(open(args.calibrator,'r',encoding='utf-8'))
+            except Exception: calj = None
         elif Path('conf/calibrator_bins.json').exists():
-            try:
-                calj = json.load(open('conf/calibrator_bins.json','r',encoding='utf-8'))
-            except Exception:
-                calj = None
-        # np.interp mapping
-        try:
-            if isinstance(calj, dict) and 'maps' in calj:  # isotonic style
-                xs = np.array(calj['maps'].get('_default',{}).get('x',[]), dtype=float)
-                ys = np.array(calj['maps'].get('_default',{}).get('y',[]), dtype=float)
-                if xs.size and ys.size:
-                    p_trend = np.clip(np.interp(p_trend, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
-            elif isinstance(calj, list):  # bins list
-                xs = np.array([it['x'] for it in calj], dtype=float)
-                ys = np.array([it['y'] for it in calj], dtype=float)
-                if xs.size and ys.size:
-                    p_trend = np.clip(np.interp(p_trend, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
-            elif isinstance(calj, dict) and 'X_' in calj and 'y_' in calj:  # calibrate_offline
-                xs = np.array(calj.get('X_', []), dtype=float)
-                ys = np.array(calj.get('y_', []), dtype=float)
-                if xs.size and ys.size:
-                    p_trend = np.clip(np.interp(p_trend, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
-        except Exception:
-            pass
-    # optional smoothing
+            try: calj = json.load(open('conf/calibrator_bins.json','r',encoding='utf-8'))
+            except Exception: calj = None
+        if calj is not None:
+            p_trend = _apply_calib(p_trend, calj)
+
+    # optional smoothing (respect spec; cap to 10 not 3)
     ema_span = int((((spec.get('components', {}) or {}).get('signal', {}) or {}).get('smoothing', {}) or {}).get('ema_span', 0) or 0)
     if ema_span > 0:
-        p_trend = pd.Series(p_trend).ewm(span=min(ema_span,3), adjust=False).mean().clip(0,1).to_numpy()
+        p_trend = pd.Series(p_trend).ewm(span=min(ema_span,10), adjust=False).mean().clip(0,1).to_numpy()
+
     df['p_trend'] = p_trend
 
     # ---------- Dynamic ATR exits (vector arrays) ----------
@@ -450,6 +493,8 @@ def main():
         audit.to_csv(outdir / "preds_test.csv", index=False)
 
     # summary
+    summary['p_raw_mean'] = float(np.mean(p_raw))
+    summary['p_trend_mean'] = float(np.mean(p_trend))
     with open(outdir / "summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
