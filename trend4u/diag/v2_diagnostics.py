@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
-import argparse, json
+"""Lightweight post-run diagnostics utilities.
+
+This module expands the previous minimal metrics dump with additional
+reporting required by research workflows:
+
+* Calibration bin statistics (predicted vs. empirical frequency)
+* Per-regime MCC scan over a range of probability thresholds
+* Simple policy scale summary derived from ``gating_debug.json``
+
+The intent is to keep the implementation dependency free (aside from
+``pandas``/``numpy``/``sklearn`` already used elsewhere) and resilient to
+missing columns.  Earlier revisions raised ``KeyError`` when the caller
+attempted to operate on a non-existent ``regime`` column.  The new version
+guards against that by synthesising a catch-all "all" regime when necessary.
+"""
+
+import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +56,8 @@ def main():
     out = Path(args.out)
 
     preds = pd.read_csv(out / 'preds_test.csv')
+    if 'regime' not in preds.columns:
+        preds['regime'] = 'all'
     y = preds['label'].astype(float).to_numpy()
     p = preds['p_trend'].astype(float).to_numpy()
 
@@ -63,14 +82,73 @@ def main():
         except Exception:
             key_hit_rate = 0.0
 
+    # --- Calibration bins -------------------------------------------------
+    diag_dir = out / 'diagnostics'
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    bins = np.linspace(0, 1, 21)
+    centers = (bins[:-1] + bins[1:]) / 2.0
+    idx = np.digitize(p, bins) - 1
+    rows = []
+    for i, c in enumerate(centers):
+        m = idx == i
+        if m.any():
+            rows.append({'bin': float(c), 'empirical': float(y[m].mean()), 'count': int(m.sum())})
+    pd.DataFrame(rows).to_csv(diag_dir / 'calibration_bins.csv', index=False)
+
+    # --- Regime threshold scan -------------------------------------------
+    thrs = np.arange(0.50, 0.801, 0.01)
+    scan_rows = []
+    for reg, gdf in preds.groupby('regime'):
+        yy = gdf['label'].to_numpy()
+        pp = gdf['p_trend'].to_numpy()
+        for thr in thrs:
+            if len(yy):
+                mcc_r = _mcc(yy, (pp >= thr).astype(int))
+            else:
+                mcc_r = float('nan')
+            scan_rows.append({'regime': reg, 'p_thr': round(float(thr), 2), 'mcc': mcc_r})
+    scan_df = pd.DataFrame(scan_rows)
+    scan_df.to_csv(diag_dir / 'regime_threshold_scan.csv', index=False)
+    best_thr = (scan_df.sort_values('mcc', ascending=False)
+                        .groupby('regime', as_index=False)
+                        .first())
+
+    # --- Policy summary ---------------------------------------------------
+    gd_path = out / 'gating_debug.json'
+    pol_rows = []
+    if gd_path.exists():
+        try:
+            gd = pd.DataFrame(json.load(open(gd_path)))
+        except Exception:
+            gd = pd.DataFrame()
+    else:
+        gd = pd.DataFrame()
+    if gd.empty:
+        gd = pd.DataFrame({'regime': ['all']})
+        gd['decision'] = []
+    if 'regime' not in gd.columns:
+        gd['regime'] = 'all'
+    for reg, gdf in gd.groupby('regime'):
+        rec = {'regime': reg}
+        if 'decision' in gdf.columns:
+            for dec in ['enter', 'exit', 'hold']:
+                rec[f'cnt_{dec}'] = int((gdf['decision'] == dec).sum())
+        if 'tp_bps_i' in gdf.columns:
+            rec['tp_mean'] = float(gdf['tp_bps_i'].dropna().mean()) if gdf['tp_bps_i'].notna().any() else float('nan')
+        if 'sl_bps_i' in gdf.columns:
+            rec['sl_mean'] = float(gdf['sl_bps_i'].dropna().mean()) if gdf['sl_bps_i'].notna().any() else float('nan')
+        pol_rows.append(rec)
+    pd.DataFrame(pol_rows).to_csv(diag_dir / 'policy_summary.csv', index=False)
+
     metrics = {
         'auc': auc,
         'mcc': mcc,
         'ece': ece,
         'psi': float(psi),
         'key_hit_rate': key_hit_rate,
+        'best_p_thr': {row['regime']: row['p_thr'] for _, row in best_thr.iterrows()},
     }
-    with open(out / 'diag_metrics.json', 'w', encoding='utf-8') as f:
+    with open(diag_dir / 'diagnostics.json', 'w', encoding='utf-8') as f:
         json.dump(metrics, f, indent=2)
     print(json.dumps(metrics, indent=2))
 
