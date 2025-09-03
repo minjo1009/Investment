@@ -4,3 +4,11 @@ FEATURE_OFI_SOFT_ONLY: true
 FEATURE_P_QUANTILE_MAP: true
 FEATURE_CALIB_GROUP_BY_SESSION_REGIME: true
 FEATURE_CALIB_GUARDS: true
+entry:
+  p_thr:
+    range: 0.55
+    trend: 0.55
+ev:
+  p_ev_req:
+    range: 0.55
+    trend: 0.55
