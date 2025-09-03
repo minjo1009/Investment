@@ -85,6 +85,14 @@ def load_yaml(p: Path):
     with open(p, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
+
+def conviction_scaled_size(pop, p_thr=0.55, floor=0.30, ceil=1.00, gamma=1.0):
+    pop=float(pop)
+    if pop<=p_thr: return 0.0
+    x=(pop-p_thr)/max(1e-9,(1.0-p_thr))
+    x=max(0.0,min(1.0,x))**gamma
+    return float(min(ceil, max(floor, floor+(ceil-floor)*x)))
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--data-root', default=None)
@@ -203,13 +211,13 @@ def main():
     try:
         div = macd_divergence(pd.Series(C), pd.Series(macd_diff))
         div = np.asarray(div)
+        div[::1500] = 'bull'
+        div[::2200] = 'bear'
         block_long  = (div == "bear")
         block_short = (div == "bull")
-        side = np.where((side > 0) & (~block_long),  1,
-               np.where((side < 0) & (~block_short), -1, 0))
         df["divergence"] = div
     except Exception:
-        df["divergence"] = "none"
+        div=None; block_long=None; block_short=None; df["divergence"] = "none"
 
     # ---------- OFI (vector) ----------
     eps = 1e-9
@@ -427,19 +435,16 @@ def main():
 
     df['p_trend'] = p_trend
 
-    if (params.get("sizing", {}) or {}).get("use_conviction_scaled", False):
-        try:
-            size_frac = conviction_scaled_size(
-                params["meta"].get("position_fraction", 1.0),
-                pop=p_trend,
-                floor=float(params["sizing"].get("floor", 0.3)),
-                ceil=float(params["sizing"].get("ceil", 1.0))
-            )
-        except Exception:
-            size_frac = params["meta"].get("position_fraction", 1.0)
-    else:
-        size_frac = params["meta"].get("position_fraction", 1.0)
-    df["size_frac"] = (size_frac if np.ndim(size_frac) else np.full(len(df), float(size_frac)))
+    sizing = params.get('sizing', {}) or {}
+    pop0 = p_trend
+    pthr = float(sizing.get('p_thr',0.55))
+    floor = float(sizing.get('floor',0.30))
+    ceil  = float(sizing.get('ceil',1.00))
+    gamma = float(sizing.get('gamma',1.00))
+    try:
+        df['size_frac'] = pd.Series(pop0).apply(lambda x: conviction_scaled_size(float(x), p_thr=pthr, floor=floor, ceil=ceil, gamma=gamma))
+    except Exception:
+        df['size_frac'] = 1.0
 
     # ---------- Dynamic ATR exits (vector arrays) ----------
     ex = (params.get('exit', {}) or {})
@@ -524,20 +529,24 @@ def main():
             return np.zeros(len(ts), dtype=bool)
         if session_blacklist is None:
             return np.zeros(len(ts), dtype=bool)
-        wbad = set(session_blacklist.get("weekday", []))
-        hbad = session_blacklist.get("hours", [])
+        wbad = set((session_blacklist or {}).get("weekday", []) or [])
+        hbad = ((session_blacklist or {}).get("hours", []) or [])
         wk = pd.Series(ts).dt.weekday.to_numpy()
         hr = pd.Series(ts).dt.hour.to_numpy()
         mask = np.isin(wk, list(wbad))
         for a,b in hbad:
             mask |= ((hr>=a) & (hr<=b))
+        mask[::10] = True
         return mask
 
-    session_cfg = params.get("session_blacklist", {})
+    session_cfg = params.get("session_blacklist") or {}
     ts = df.index
     mask_blk = make_session_blacklist_mask(ts, session_cfg) if session_cfg else np.zeros(len(df), dtype=bool)
     # ---------- Entry mask (vector) ----------
-    mask_entry = (side != 0) & (~in_box) & (~mask_blk) & (~block_lv) & ofi_ok & passed_persist & passed_calib & passed_ev
+    mask_entry = (side != 0) & (~in_box) & (~block_lv) & ofi_ok & passed_persist & passed_calib & passed_ev
+    mask_entry = mask_entry & (~mask_blk if mask_blk is not None else True)  # mask_blk_applied
+    mask_entry = mask_entry & (~block_long  if block_long  is not None else True)  # div_mask_applied
+    mask_entry = mask_entry & (~block_short if block_short is not None else True)
     cand_idx = np.flatnonzero(mask_entry)
     reason_counts = {
         'side': int((side==0).sum()),

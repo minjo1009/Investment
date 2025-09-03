@@ -10,11 +10,21 @@ signal:
   denoise: wavelet_l1
 sizing:
   use_conviction_scaled: true
-  floor: 0.30
-  ceil: 1.00
+  floor: 0.3
+  ceil: 1.0
 session_blacklist:
-  ASIA: ["00:05-00:30"]
-  US: ["13:28-13:35"]
+  ASIA:
+  - 00:05-00:30
+  US:
+  - 13:28-13:35
+  weekday:
+  - 5
+  - 6
+  hours:
+  - - 0
+    - 1
+  - - 23
+    - 23
 structure:
   levels_gate:
     enabled: true
