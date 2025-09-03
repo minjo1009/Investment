@@ -1,7 +1,8 @@
 import argparse, os, sys, runpy, zipfile, yaml
+from backtest.utils.dedupe import safe_load_no_dupe
 
 def overlay_params(base_path, out_path, thr=None, hold=None):
-    d=yaml.safe_load(open(base_path,"r",encoding="utf-8")) or {}
+    d=safe_load_no_dupe(open(base_path,"r",encoding="utf-8")) or {}
     if thr is not None:
         d.setdefault("entry",{}).setdefault("p_thr",{})
         d["entry"]["p_thr"]["trend"]=float(thr); d["entry"]["p_thr"]["range"]=float(thr)

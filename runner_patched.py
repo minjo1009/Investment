@@ -5,6 +5,7 @@ runner_patched.py — Strategy V2 wiring (Conviction Gate + EV + Rolling Balance
 import os, sys, json, argparse, csv, math
 from pathlib import Path
 import yaml, pandas as pd, numpy as np
+from backtest.utils.dedupe import safe_load_no_dupe
 from backtest.strategy_v2 import (passes_conviction, ConvictionParams, ConvictionState,
 
                                   RollingBalance, RollingBalanceParams, approx_ofi, Frictions)
@@ -59,7 +60,7 @@ except Exception:
 # --- END PATCH ----------------------------------------------------------------
 
 def load_yaml(p):
-    with open(p, 'r', encoding='utf-8') as f: return yaml.safe_load(f)
+    with open(p, 'r', encoding='utf-8') as f: return safe_load_no_dupe(f)
 def true_range(h, l, pc): return max(h-l, abs(h-pc), abs(l-pc))
 
 def main():
