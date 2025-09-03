@@ -13,6 +13,8 @@ from pathlib import Path
 import yaml
 import numpy as np
 import pandas as pd
+from trend4u.calib.quantile_map import QuantileMap
+from trend4u.calib import drift as drift
 
 from backtest.strategy_v2 import Frictions  # keep single import to avoid circulars
 
@@ -84,6 +86,7 @@ def main():
     ap.add_argument('--data-root', required=True)
     ap.add_argument('--csv-glob', required=True)
     ap.add_argument('--params', required=True)
+    ap.add_argument('--flags', default=None, help='feature flags YAML')
     ap.add_argument('--outdir', required=True)
     ap.add_argument('--calibrator', default=None, help='optional calibrator JSON (isotonic/bins)')
     # speed / io flags
@@ -95,6 +98,7 @@ def main():
     repo_root = Path('.').resolve()
     spec = load_yaml(repo_root / 'specs' / 'strategy_v2_spec.yml')
     params = load_yaml(Path(args.params))
+    flags = load_yaml(Path(args.flags)) if getattr(args, 'flags', None) else {}
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
 
     # merge exits/costs from spec into params (defaults)
@@ -136,6 +140,11 @@ def main():
             price = close
         df = pd.DataFrame(rows)
         tcol = 'timestamp'
+
+    # session bucket from timestamp (simple UTC hour split)
+    hrs = df[tcol].dt.hour.to_numpy()
+    session = np.where(hrs < 8, 'ASIA', np.where(hrs < 16, 'EU', 'US'))
+    df['session'] = session
 
     # limit for speed
     if args.limit_bars:
@@ -258,21 +267,31 @@ def main():
         p_raw = expit(lin)
         p_raw = np.clip(p_raw, 0.05, 0.95)  # guard rails
 
+    if flags.get("FEATURE_P_QUANTILE_MAP", True) and (params.get("calibration", {}).get("use_quantile_map", True)):
+        qm_path = os.environ.get("QMAP_PATH", params.get("qmap_path", "out/quantile_map.json"))
+        if os.path.exists(qm_path):
+            try:
+                qm = QuantileMap.loads(open(qm_path, "r", encoding="utf-8").read())
+                p_raw = qm.transform(p_raw)
+            except Exception:
+                pass
+
     # ---- calibrator priority & safety ----
     def _apply_calib(p, calj):
         try:
             if isinstance(calj, dict) and 'maps' in calj:
-                sec = calj['maps'].get('_default', {})
-                xs = np.array(sec.get('x', []), dtype=float)
-                ys = np.array(sec.get('y', []), dtype=float)
+                sec = (calj.get('maps') or {}).get('_default', {})
+                return _apply_calib(p, sec)
+            if isinstance(calj, dict):
+                xs = np.array(calj.get('xs') or calj.get('x') or calj.get('X_'), dtype=float)
+                ys = np.array(calj.get('ys') or calj.get('y') or calj.get('y_'), dtype=float)
                 if xs.size and ys.size:
-                    # enforce ascending unique xs
                     order = np.argsort(xs)
                     xs, ys = xs[order], ys[order]
                     _, idx = np.unique(xs, return_index=True)
                     xs, ys = xs[idx], ys[idx]
                     return np.clip(np.interp(p, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
-            elif isinstance(calj, list):  # list of bins
+            if isinstance(calj, list):
                 xs = np.array([it['x'] for it in calj], dtype=float)
                 ys = np.array([it['y'] for it in calj], dtype=float)
                 if xs.size and ys.size:
@@ -281,32 +300,41 @@ def main():
                     _, idx = np.unique(xs, return_index=True)
                     xs, ys = xs[idx], ys[idx]
                     return np.clip(np.interp(p, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
-            elif isinstance(calj, dict) and 'X_' in calj and 'y_' in calj:
-                xs = np.array(calj.get('X_', []), dtype=float)
-                ys = np.array(calj.get('y_', []), dtype=float)
-                if xs.size and ys.size:
-                    order = np.argsort(xs)
-                    xs, ys = xs[order], ys[order]
-                    _, idx = np.unique(xs, return_index=True)
-                    xs, ys = xs[idx], ys[idx]
-                    return np.clip(np.interp(p, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
         except Exception:
-            return p
+            pass
         return p
+
+    def load_calib_map(calib, key):
+        if isinstance(calib, dict):
+            return (calib.get('maps') or {}).get(key)
+        return None
 
     if 'p_hat_calibrated' in df.columns:
         p_trend = df['p_hat_calibrated'].astype(float).clip(0,1).to_numpy()
     else:
         p_trend = p_raw.copy()
-        calj = None
+        calib_json = None
         if args.calibrator and Path(args.calibrator).exists():
-            try: calj = json.load(open(args.calibrator,'r',encoding='utf-8'))
-            except Exception: calj = None
+            try: calib_json = json.load(open(args.calibrator,'r',encoding='utf-8'))
+            except Exception: calib_json = None
         elif Path('conf/calibrator_bins.json').exists():
-            try: calj = json.load(open('conf/calibrator_bins.json','r',encoding='utf-8'))
-            except Exception: calj = None
-        if calj is not None:
-            p_trend = _apply_calib(p_trend, calj)
+            try: calib_json = json.load(open('conf/calibrator_bins.json','r',encoding='utf-8'))
+            except Exception: calib_json = None
+        if calib_json is not None:
+            if isinstance(calib_json, dict) and 'maps' in calib_json:
+                sess_arr = df['session'].to_numpy() if 'session' in df.columns else np.array(['_default']*n)
+                p_trend = p_raw.copy()
+                for s in np.unique(sess_arr):
+                    for r in np.unique(regime):
+                        mask = (sess_arr==s) & (regime==r)
+                        if not mask.any():
+                            continue
+                        grp_key = f"session={s}|regime={r}"
+                        sec = load_calib_map(calib_json, grp_key) or load_calib_map(calib_json, f"regime={r}") or load_calib_map(calib_json, "_default")
+                        if sec:
+                            p_trend[mask] = _apply_calib(p_raw[mask], sec)
+            else:
+                p_trend = _apply_calib(p_trend, calib_json)
 
     # optional smoothing (respect spec; cap to 10 not 3)
     ema_span = int((((spec.get('components', {}) or {}).get('signal', {}) or {}).get('smoothing', {}) or {}).get('ema_span', 0) or 0)

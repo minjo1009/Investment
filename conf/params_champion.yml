@@ -6,10 +6,9 @@ meta:
   fee_bps_per_side: 10
   slippage_bps_per_side: 2
   funding_bps_estimate: 0.5
-
 entry:
   p_thr:
-    trend: 0.80
+    trend: 0.8
     range: 0.83
   hysteresis:
     thr_entry: 0.88
@@ -21,30 +20,75 @@ entry:
     ema_len: 10
     align_window: 5
     align_ge: 3
-    conf_floor: 0.30   # 미달 시 소프트 페널티
+    conf_floor: 0.3
   structure:
     avoid_in_box: true
-
 exit:
   mode: dynamic_atr
   atr:
     n: 14
     use_ema: true
-    tp_mult: {trend: 3.0, range: 1.4}
-    sl_mult: {trend: 1.0, range: 1.1}
-    cap_bps: {tp_min: 10, tp_max: 400, sl_min: 8, sl_max: 220}
+    tp_mult:
+      trend: 3.0
+      range: 1.4
+    sl_mult:
+      trend: 1.0
+      range: 1.1
+    cap_bps:
+      tp_min: 10
+      tp_max: 400
+      sl_min: 8
+      sl_max: 220
   min_hold: 8
   max_hold: 60
   breakeven_bps: 7
   cooldown: 5
-
+  tp_bps: 38
+  sl_bps: 22
 regime:
   detector:
     atr_len: 14
     donchian_len: 20
     atr_norm_on_1m: true
-
 session:
-  asia:  {p_thr_adj: 0.00, exit_tp_adj_bps: 0,   blacklist_windows: []}
-  eu:    {p_thr_adj: 0.01, exit_tp_adj_bps: -3,  blacklist_windows: []}
-  us:    {p_thr_adj: 0.02, exit_tp_adj_bps: -5,  blacklist_windows: ["13:25-13:35","20:55-21:05"]}
+  asia:
+    p_thr_adj: 0.0
+    exit_tp_adj_bps: 0
+    blacklist_windows: []
+  eu:
+    p_thr_adj: 0.01
+    exit_tp_adj_bps: -3
+    blacklist_windows: []
+  us:
+    p_thr_adj: 0.02
+    exit_tp_adj_bps: -5
+    blacklist_windows:
+    - 13:25-13:35
+    - 20:55-21:05
+  blacklist_windows_utc: []
+  vol_pctl_cutoff: 0.2
+calibration:
+  ece_guard: 0.03
+  psi_guard: 0.2
+  min_bin: 100
+  use_quantile_map: true
+  qm_bins: 100
+ev_gate:
+  hysteresis:
+    thr_entry: 0.88
+    thr_exit: 0.82
+  regime:
+    trend:
+      ev_margin_bps: 4
+      delta_p_min: 0.06
+    range:
+      ev_margin_bps: 6
+      delta_p_min: 0.08
+    neutral:
+      ev_margin_bps: 5
+      delta_p_min: 0.07
+guards:
+  on_bad_calib:
+    thr_entry_add: 0.02
+    ev_margin_bps_add: 2
+    trades_cap: 0.75
