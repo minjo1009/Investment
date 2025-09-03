@@ -9,6 +9,7 @@ runner_patched.py — Strategy V2 (Vectorized): Conviction Gate + EV(prob-mode) 
 - Debug: gating_debug.csv (entries/exits), optional JSON
 """
 import os, sys, json, argparse, csv, math, glob, shutil
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from pathlib import Path
 import yaml
 import numpy as np
