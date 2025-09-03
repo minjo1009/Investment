@@ -1,4 +1,4 @@
-name: BacktestV2-Validation
+name: BacktestV1-Validation
 
 on:
   workflow_dispatch:
