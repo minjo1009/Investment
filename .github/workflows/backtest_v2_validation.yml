@@ -7,7 +7,7 @@ on:
         description: 'ZIP file with CSV data (e.g., ETHUSDT_1min_2020_2025.zip)'
         required: true
       CSV_GLOB:
-        description: 'Glob pattern for CSV inside extracted data'
+        description: 'Glob pattern for CSV inside extracted data (e.g., ETHUSDT_1min_*.csv)'
         required: true
         default: '*.csv'
 
@@ -23,14 +23,21 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install system tools
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get update -y
+          sudo apt-get install -y jq unzip
+
+      - name: Install Python deps
         shell: bash
         run: |
           set -e
           python -m pip install -U pip
           pip install pandas numpy scikit-learn pyyaml
 
-      - name: Prepare directories
+      - name: Prepare dirs
         shell: bash
         run: |
           set -e
@@ -42,6 +49,7 @@ jobs:
           set -e
           cp "${{ inputs.DATA_ZIP }}" _in/data.zip
           unzip -q -o _in/data.zip -d data
+          # ensure gating_debug.json exists even if runner skips writing
           : > _out_4u/run/gating_debug.json
 
       - name: Run backtest
@@ -55,7 +63,8 @@ jobs:
             --flags conf/feature_flags.yml \
             --outdir _out_4u/run \
             --limit-bars 250000 || true
-          # Guarantee artifacts exist
+
+          # guarantee artifacts to avoid downstream errors
           base="_out_4u/run"
           [ -f "$base/summary.json" ] || printf '{}' > "$base/summary.json"
           [ -f "$base/preds_test.csv" ] || : > "$base/preds_test.csv"
@@ -86,14 +95,11 @@ jobs:
           g="$base/gating_debug.json"
           echo "=== GATE COLUMNS PRESENT ==="
           if [ -s "$g" ]; then
-            # 첫 레코드의 키 목록에서 관심 컬럼 교집합만 출력
-            present=$(jq -r '.[0] | keys[]' "$g" 2>/dev/null | sort -u || true)
-            wanted="divergence
-in_box
-ofi_z
-regime
-size_frac"
-            printf "%s\n" "$present" | grep -xF -f <(printf "%s\n" "$wanted") || echo "[]"
+            # keys from first record ∩ wanted columns (case variants for OFI)
+            jq -r '.[0] | keys
+              | map(select(. as $k | ["divergence","in_box","ofi_z","OFI_z","regime","size_frac"] | index($k)))
+              | unique
+              | .[]' "$g" || echo "[]"
           else
             echo "[]"
           fi
