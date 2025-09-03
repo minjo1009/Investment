@@ -512,30 +512,30 @@ def main():
     ofi_mag_ok = (df['ofi_z'].to_numpy() >= z_min)
     ofi_ok = (ofi_dir_ok & ofi_mag_ok)
 
-    def make_session_blacklist_mask(df, blconf):
-        import numpy as np
-        if "session" not in df.columns: return np.zeros(len(df), dtype=bool)
-        times = (df.index.strftime("%H:%M") if hasattr(df.index, "strftime")
-                 else df.get("time", pd.Series(["00:00"]*len(df))).astype(str))
-        sess  = df["session"].astype(str)
-        m = np.zeros(len(df), dtype=bool)
-        for s, ranges in (blconf or {}).items():
-            loc = (sess == s)
-            if not np.any(loc): continue
-            tsub = times[loc]
-            mm = np.zeros(tsub.shape[0], dtype=bool)
-            for r in (ranges or []):
-                a, b = str(r).split("-")
-                mm |= ((tsub >= a) & (tsub <= b))
-            m[loc] |= mm
-        return m
+    def make_session_blacklist_mask(ts, session_blacklist=None):
+        """
+        ts: pandas.DatetimeIndex (UTC 기반 가정)
+        session_blacklist: 예) {"weekday":[5,6], "hours":[(0,1),(23,23)]}
+        반환: np.ndarray(bool)
+        """
+        import numpy as np, pandas as pd
+        ts = pd.to_datetime(ts, errors="coerce")
+        if not hasattr(ts, "dtype") or "datetime" not in str(ts.dtype):
+            return np.zeros(len(ts), dtype=bool)
+        if session_blacklist is None:
+            return np.zeros(len(ts), dtype=bool)
+        wbad = set(session_blacklist.get("weekday", []))
+        hbad = session_blacklist.get("hours", [])
+        wk = pd.Series(ts).dt.weekday.to_numpy()
+        hr = pd.Series(ts).dt.hour.to_numpy()
+        mask = np.isin(wk, list(wbad))
+        for a,b in hbad:
+            mask |= ((hr>=a) & (hr<=b))
+        return mask
 
-    bl = params.get("session_blacklist", {})
-    if bl:
-        mask_blk = make_session_blacklist_mask(df, bl)
-    else:
-        mask_blk = np.zeros(len(df), dtype=bool)
-
+    session_cfg = params.get("session_blacklist", {})
+    ts = df.index
+    mask_blk = make_session_blacklist_mask(ts, session_cfg) if session_cfg else np.zeros(len(df), dtype=bool)
     # ---------- Entry mask (vector) ----------
     mask_entry = (side != 0) & (~in_box) & (~mask_blk) & (~block_lv) & ofi_ok & passed_persist & passed_calib & passed_ev
     cand_idx = np.flatnonzero(mask_entry)
