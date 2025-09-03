@@ -96,10 +96,7 @@ jobs:
           echo "=== GATE COLUMNS PRESENT ==="
           if [ -s "$g" ]; then
             # keys from first record ∩ wanted columns (case variants for OFI)
-            jq -r '.[0] | keys
-              | map(select(. as $k | ["divergence","in_box","ofi_z","OFI_z","regime","size_frac"] | index($k)))
-              | unique
-              | .[]' "$g" || echo "[]"
+            jq -r '.[0] | keys | map(select(. as $k | ["divergence","in_box","ofi_z","OFI_z","regime","size_frac"] | index($k))) | unique | .[]' "$g" || echo "[]"
           else
             echo "[]"
           fi
