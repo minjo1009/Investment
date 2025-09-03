@@ -16,7 +16,7 @@ import pandas as pd
 from trend4u.calib.quantile_map import QuantileMap
 from trend4u.calib import drift as drift
 
-from backtest.strategy_v2 import Frictions  # keep single import to avoid circulars
+from backtest.strategy_v2 import Frictions, ofi_conf_alignment, soft_gate_adjustments  # keep single import to avoid circulars
 
 # ---------- timestamp auto-normalization (safe, light) ----------
 try:
@@ -83,8 +83,9 @@ def load_yaml(p: Path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--data-root', required=True)
-    ap.add_argument('--csv-glob', required=True)
+    ap.add_argument('--data-root', default=None)
+    ap.add_argument('--csv-glob', default=None)
+    ap.add_argument('--data', default=None, help='direct CSV path')
     ap.add_argument('--params', required=True)
     ap.add_argument('--flags', default=None, help='feature flags YAML')
     ap.add_argument('--outdir', required=True)
@@ -108,13 +109,8 @@ def main():
     params.setdefault('meta', {}).update({k: params.get('meta', {}).get(k, v) for k, v in costs.items()})
 
     # locate CSV
-    matches = []
-    for p in glob.glob(str(Path(args.data_root) / '**' / '*.csv'), recursive=True):
-        if glob.fnmatch.fnmatch(p, str(Path(args.data_root) / args.csv_glob)):
-            matches.append(p)
-
-    if matches:
-        csv_path = matches[0]
+    if args.data:
+        csv_path = Path(args.data)
         df = pd.read_csv(csv_path)
         need_cols = ['open','high','low','close','volume']
         for c in need_cols:
@@ -126,20 +122,40 @@ def main():
         df[tcol] = pd.to_datetime(df[tcol], utc=True, errors='coerce')
         df = df.sort_values(tcol).reset_index(drop=True)
     else:
-        # graceful fallback: generate small trending dataset so tests can run without real data
-        n_gen = 200
-        ts = pd.date_range('2020-01-01', periods=n_gen, freq='1min', tz='UTC')
-        price = 100.0
-        rows = []
-        for t in ts:
-            open_ = price
-            high = open_ + 0.5
-            low = open_
-            close = high
-            rows.append({'timestamp': t, 'open': open_, 'high': high, 'low': low, 'close': close, 'volume': 1.0})
-            price = close
-        df = pd.DataFrame(rows)
-        tcol = 'timestamp'
+        if not (args.data_root and args.csv_glob):
+            raise SystemExit('Need --data or (--data-root and --csv-glob)')
+        matches = []
+        for p in glob.glob(str(Path(args.data_root) / '**' / '*.csv'), recursive=True):
+            if glob.fnmatch.fnmatch(p, str(Path(args.data_root) / args.csv_glob)):
+                matches.append(p)
+
+        if matches:
+            csv_path = matches[0]
+            df = pd.read_csv(csv_path)
+            need_cols = ['open','high','low','close','volume']
+            for c in need_cols:
+                if c not in df.columns:
+                    raise SystemExit(f"Missing column: {c}")
+            tcol = 'timestamp' if 'timestamp' in df.columns else ('datetime' if 'datetime' in df.columns else None)
+            if tcol is None:
+                raise SystemExit("Need timestamp/datetime column")
+            df[tcol] = pd.to_datetime(df[tcol], utc=True, errors='coerce')
+            df = df.sort_values(tcol).reset_index(drop=True)
+        else:
+            # graceful fallback: generate small trending dataset so tests can run without real data
+            n_gen = 200
+            ts = pd.date_range('2020-01-01', periods=n_gen, freq='1min', tz='UTC')
+            price = 100.0
+            rows = []
+            for t in ts:
+                open_ = price
+                high = open_ + 0.5
+                low = open_
+                close = high
+                rows.append({'timestamp': t, 'open': open_, 'high': high, 'low': low, 'close': close, 'volume': 1.0})
+                price = close
+            df = pd.DataFrame(rows)
+            tcol = 'timestamp'
 
     # session bucket from timestamp (simple UTC hour split)
     hrs = df[tcol].dt.hour.to_numpy()
@@ -157,6 +173,11 @@ def main():
     C = df['close'].astype(float).to_numpy()
     V = df['volume'].astype(float).to_numpy()
     n = len(df)
+
+    try:
+        df['ofi_conf'] = ofi_conf_alignment(df)['OFI_conf'].to_numpy()
+    except Exception:
+        df['ofi_conf'] = np.zeros(n)
 
     # ---------- MACD (vector) ----------
     m_fast  = int((((spec.get('components', {}) or {}).get('signal', {}) or {}).get('macd', {}) or {}).get('fast', 12))
@@ -267,12 +288,15 @@ def main():
         p_raw = expit(lin)
         p_raw = np.clip(p_raw, 0.05, 0.95)  # guard rails
 
+    p_raw_orig = p_raw.copy()
+    p_qm = p_raw.copy()
     if flags.get("FEATURE_P_QUANTILE_MAP", True) and (params.get("calibration", {}).get("use_quantile_map", True)):
         qm_path = os.environ.get("QMAP_PATH", params.get("qmap_path", "out/quantile_map.json"))
         if os.path.exists(qm_path):
             try:
                 qm = QuantileMap.loads(open(qm_path, "r", encoding="utf-8").read())
-                p_raw = qm.transform(p_raw)
+                p_qm = qm.transform(p_raw)
+                p_raw = p_qm
             except Exception:
                 pass
 
@@ -290,7 +314,7 @@ def main():
                     xs, ys = xs[order], ys[order]
                     _, idx = np.unique(xs, return_index=True)
                     xs, ys = xs[idx], ys[idx]
-                    return np.clip(np.interp(p, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
+                    return np.interp(p, xs, ys, left=ys[0], right=ys[-1])
             if isinstance(calj, list):
                 xs = np.array([it['x'] for it in calj], dtype=float)
                 ys = np.array([it['y'] for it in calj], dtype=float)
@@ -299,18 +323,26 @@ def main():
                     xs, ys = xs[order], ys[order]
                     _, idx = np.unique(xs, return_index=True)
                     xs, ys = xs[idx], ys[idx]
-                    return np.clip(np.interp(p, xs, ys, left=ys[0], right=ys[-1]), 0, 1)
+                    return np.interp(p, xs, ys, left=ys[0], right=ys[-1])
         except Exception:
             pass
         return p
 
+    def _norm_key(key: str) -> str:
+        try:
+            return "|".join(part.strip().upper() for part in str(key).split("|"))
+        except Exception:
+            return str(key)
+
     def load_calib_map(calib, key):
         if isinstance(calib, dict):
-            return (calib.get('maps') or {}).get(key)
+            maps = { _norm_key(k): v for k, v in (calib.get('maps') or {}).items() }
+            return maps.get(_norm_key(key))
         return None
 
+    prob_source = 'p_hat_calibrated' if 'p_hat_calibrated' in df.columns else 'p_hat'
     if 'p_hat_calibrated' in df.columns:
-        p_trend = df['p_hat_calibrated'].astype(float).clip(0,1).to_numpy()
+        p_trend = df['p_hat_calibrated'].astype(float).to_numpy()
     else:
         p_trend = p_raw.copy()
         calib_json = None
@@ -320,6 +352,7 @@ def main():
         elif Path('conf/calibrator_bins.json').exists():
             try: calib_json = json.load(open('conf/calibrator_bins.json','r',encoding='utf-8'))
             except Exception: calib_json = None
+        used_keys = set()
         if calib_json is not None:
             if isinstance(calib_json, dict) and 'maps' in calib_json:
                 sess_arr = df['session'].to_numpy() if 'session' in df.columns else np.array(['_default']*n)
@@ -330,16 +363,30 @@ def main():
                         if not mask.any():
                             continue
                         grp_key = f"session={s}|regime={r}"
-                        sec = load_calib_map(calib_json, grp_key) or load_calib_map(calib_json, f"regime={r}") or load_calib_map(calib_json, "_default")
-                        if sec:
+                        sec = load_calib_map(calib_json, grp_key)
+                        used_key = None
+                        if sec is None:
+                            sec = load_calib_map(calib_json, f"regime={r}")
+                            if sec is not None:
+                                used_key = f"regime={r}"
+                        else:
+                            used_key = grp_key
+                        if sec is None:
+                            sec = load_calib_map(calib_json, "_DEFAULT")
+                            if sec is not None:
+                                used_key = "_DEFAULT"
+                        if sec is not None:
+                            if used_key:
+                                used_keys.add(_norm_key(used_key))
                             p_trend[mask] = _apply_calib(p_raw[mask], sec)
             else:
                 p_trend = _apply_calib(p_trend, calib_json)
+                used_keys.add('_DEFAULT')
 
     # optional smoothing (respect spec; cap to 10 not 3)
     ema_span = int((((spec.get('components', {}) or {}).get('signal', {}) or {}).get('smoothing', {}) or {}).get('ema_span', 0) or 0)
     if ema_span > 0:
-        p_trend = pd.Series(p_trend).ewm(span=min(ema_span,10), adjust=False).mean().clip(0,1).to_numpy()
+        p_trend = pd.Series(p_trend).ewm(span=min(ema_span,10), adjust=False).mean().to_numpy()
 
     df['p_trend'] = p_trend
 
@@ -380,14 +427,30 @@ def main():
     ev_margin_bps = float(ev_gate.get('ev_margin_bps', 6.0))
     delta_p_min   = float(ev_gate.get('delta_p_min', 0.02))
 
-    p_ev_req = (sl_i + frictions_bps + ev_margin_bps) / (tp_i + sl_i + 1e-9)
-    passed_ev = (p_trend >= p_ev_req) & ((p_trend - p_ev_req) >= delta_p_min)
-
-    # ---------- Thresholds & OFI align ----------
     gcal = (((spec.get('components', {}) or {}).get('gating', {}) or {}).get('calibration', {}) or {})
     thr_trend = float((gcal.get('p_thr', {}) or {}).get('trend', 0.80))
     thr_range = float((gcal.get('p_thr', {}) or {}).get('range', 0.90))
-    thr = np.where(regime=='trend', thr_trend, thr_range)
+    thr_base = np.where(regime=='trend', thr_trend, thr_range)
+
+    p_ev_req_base = (sl_i + frictions_bps) / (tp_i + sl_i + 1e-9)
+    thr = thr_base.copy()
+    p_ev_req = p_ev_req_base.copy()
+    tp_adj = np.ones_like(tp_i)
+    ofi_conf = df['ofi_conf'].to_numpy() if 'ofi_conf' in df.columns else np.zeros(n)
+    thr_add = np.zeros(n); pev_add = np.zeros(n)
+    for idx, c in enumerate(ofi_conf):
+        adj = soft_gate_adjustments(float(c))
+        thr_add[idx] = float(adj.get('thr_add', 0.0))
+        pev_add[idx] = float(adj.get('pev_add', 0.0))
+        tp_adj[idx] = float(adj.get('tp_scale', 1.0))
+    thr = thr + thr_add
+    p_ev_req = p_ev_req + pev_add
+    tp_i = tp_i * tp_adj
+
+    ev_bps = p_trend*tp_i - (1.0 - p_trend)*sl_i - frictions_bps
+    passed_ev = (ev_bps >= ev_margin_bps) & ((p_trend - p_ev_req) >= delta_p_min)
+    guard_triggered = (p_trend - p_ev_req) < delta_p_min
+
     passed_calib = (p_trend >= thr)
 
     ofi_cfg = (((spec.get('components', {}) or {}).get('orderflow', {}) or {}).get('ofi_align', {}) or {})
@@ -401,6 +464,14 @@ def main():
     # ---------- Entry mask (vector) ----------
     mask_entry = (side != 0) & (~in_box) & ofi_ok & passed_persist & passed_calib & passed_ev
     cand_idx = np.flatnonzero(mask_entry)
+    reason_counts = {
+        'side': int((side==0).sum()),
+        'in_box': int(in_box.sum()),
+        'ofi': int((~ofi_ok).sum()),
+        'persistence': int((~passed_persist).sum()),
+        'calibration': int((~passed_calib).sum()),
+        'ev': int((~passed_ev).sum()),
+    }
 
     # ---------- Short loop over entries: position/exit ----------
     trades = []
@@ -478,6 +549,20 @@ def main():
         summary = {"n_trades": int(len(trades)), "hit_rate": hit_rate, "mcc": mcc, "cum_pnl_bps": float(pnl.sum())}
     else:
         summary = {"n_trades": 0, "hit_rate": 0.0, "mcc": mcc, "cum_pnl_bps": 0.0}
+    summary['used_prob_source'] = prob_source
+    if 'used_keys' in locals():
+        summary['used_calib_keys'] = sorted(used_keys)
+    summary['p_samples'] = {
+        'p_raw': float(np.mean(p_raw_orig)),
+        'p_qm': float(np.mean(p_qm)),
+        'p_cal': float(np.mean(p_trend))
+    }
+    summary['thr_before'] = float(np.mean(thr_base))
+    summary['thr_after'] = float(np.mean(thr))
+    summary['p_ev_req_before'] = float(np.mean(p_ev_req_base))
+    summary['p_ev_req_after'] = float(np.mean(p_ev_req))
+    summary['guard_triggered'] = int(guard_triggered.sum())
+    summary['reason_counts'] = reason_counts
 
     # optional calibration metrics
     if args.calibrator:
