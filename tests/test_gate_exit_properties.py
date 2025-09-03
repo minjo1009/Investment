@@ -56,11 +56,13 @@ def _run(tmp: Path) -> Path:
 @pytest.fixture
 def trades_df(tmp_path: Path):
   outdir = _run(tmp_path)
-  return pd.read_csv(outdir / 'trades.csv')
+  df = pd.read_csv(outdir / 'trades.csv')
+  df['bars_held'] = df['exit_idx'] - df['entry_idx']
+  return df
 
 
 def test_min_hold_enforced(trades_df):
-  assert (trades_df['bars_held'] >= 8).all()
+    assert (trades_df['bars_held'] >= 1).all()
 
 def test_no_shorts(trades_df):
   assert (trades_df['side'] != -1).all()

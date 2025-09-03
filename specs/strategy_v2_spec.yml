@@ -1,13 +1,33 @@
 name: strategy_v2
 components:
   regime: {atr_len: 14, donchian_len: 20}
-  signal: {macd: [12,26,9], denoise: wavelet_l1}
-  ofi: {lookback: 12, z_min: 0.30}
+  signal:
+    macd:
+      fast: 12
+      slow: 26
+      signal: 9
+    denoise: wavelet_l1
+    smoothing: {ema_span: 0}
+    weights: {macd: 0.6, ofi: 0.4}
+  orderflow:
+    ofi_align:
+      lookback: 12
+      z_min: 0.30
   costs: {fee_bps_side: 5, slip_bps_side: 2, funding_bps_rt: 0.5}
   exit: {mode: dyn_atr}
   gating:
-    conviction: {persistence: {m: 5, k: 3}, hysteresis: {thr_entry: 0.88, thr_exit: 0.82}, ev_gate: {alpha_cost: 1.0}}
-    calibration: {p_thr: {trend: 0.80, range: 0.83}}
+    conviction:
+      persistence: {m: 5, k: 3}
+      hysteresis: {thr_entry: 0.88, thr_exit: 0.82}
+      ev_gate:
+        alpha_cost: 1.0
+        mode: probability
+        ev_margin_bps: 6
+        delta_p_min: 0.02
+    calibration:
+      p_thr:
+        trend: 0.80
+        range: 0.83
 artifacts: [summary.json, gating_debug.json, preds_test.csv, trades.csv]
 notes: |
   스펙은 구조만 정의. 문턱/게이팅 수치는 conf/params_champion.yml에서만 관리.

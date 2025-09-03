@@ -65,10 +65,10 @@ def test_spec_keys():
   assert 'signal' in comps and 'gating' in comps
 
 
-def test_wiring_p_raw(tmp_path: Path):
+def test_wiring_p_trend(tmp_path: Path):
   outdir = _run(tmp_path)
   preds = pd.read_csv(outdir / 'preds_test.csv')
-  assert preds['p_raw'].between(0,1).all()
+  assert preds['p_trend'].between(0,1).all()
 
 
 def test_summary_metrics(tmp_path: Path):
@@ -91,7 +91,7 @@ def test_gate_sweep_monotonic(tmp_path: Path):
 def test_ev_gate(tmp_path: Path):
   outdir = _run(tmp_path)
   dbg = json.load(open(outdir / 'gating_debug.json'))
-  vals = [d.get('EV') for d in dbg if 'EV' in d]
+  vals = [d.get('ev_bps') for d in dbg if 'ev_bps' in d]
   assert vals and all(isinstance(v, (int, float)) for v in vals)
 
 
@@ -105,7 +105,7 @@ def test_dynamic_atr_exits(tmp_path: Path):
 def test_artifacts_schema(tmp_path: Path):
   outdir = _run(tmp_path)
   preds = pd.read_csv(outdir / 'preds_test.csv')
-  assert set(['p_raw','macd_hist']).issubset(preds.columns)
+  assert set(['p_trend','macd_hist']).issubset(preds.columns)
   summary = json.load(open(outdir / 'summary.json'))
   for k in ['n_trades','hit_rate','mcc','cum_pnl_bps']:
     assert k in summary

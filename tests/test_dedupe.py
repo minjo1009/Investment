@@ -1,4 +1,9 @@
 import io
+import sys
+from pathlib import Path
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 import pandas as pd
 import pytest
 from backtest.utils.dedupe import dedupe_columns, safe_load_no_dupe

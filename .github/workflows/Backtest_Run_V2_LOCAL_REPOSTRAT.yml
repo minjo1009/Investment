@@ -73,20 +73,30 @@ jobs:
           if grep -q -- "--mode" .runner_help.txt; then MODE_OPT="--mode run"; fi
           echo "MODE_OPT=$MODE_OPT" >> "$GITHUB_ENV"
 
-      - name: Run backtest
-        shell: bash
-        run: |
-          set -e
-          CAL_OPT=""; if [ -f "$CALIB_JSON" ]; then CAL_OPT="--calibrator $CALIB_JSON"; fi
-          install -d "out/${{ inputs.OUTDIR }}"
-          if [ -n "$MODE_OPT" ]; then
-            python "$RUNNER" $MODE_OPT --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" $CAL_OPT
-          else
-            python "$RUNNER" --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" $CAL_OPT
-          fi
+        - name: Run backtest
+          shell: bash
+          run: |
+            set -e
+            CAL_OPT=""; if [ -f "$CALIB_JSON" ]; then CAL_OPT="--calibrator $CALIB_JSON"; fi
+            install -d "out/${{ inputs.OUTDIR }}"
+            if [ -n "$MODE_OPT" ]; then
+              python "$RUNNER" $MODE_OPT --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" --limit-bars 300000 --debug-level entries --no-preds $CAL_OPT
+            else
+              python "$RUNNER" --data-root "$DATA_ROOT" --csv-glob "$CSV_PATTERN" --params conf/params_champion.yml --outdir "out/${{ inputs.OUTDIR }}" --limit-bars 300000 --debug-level entries --no-preds $CAL_OPT
+            fi
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: backtest_repo_${{ github.run_id }}
-          path: out/${{ inputs.OUTDIR }}
-          if-no-files-found: warn
+        - name: Calibrator bins fallback
+          shell: bash
+          run: |
+            python tools/fit_calibrator_bins.py --preds out/${{ inputs.OUTDIR }}/preds_test.csv --out conf/calibrator_bins.json || true
+
+        - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          with:
+            name: backtest_repo_${{ github.run_id }}
+            path: |
+              out/${{ inputs.OUTDIR }}/summary.json
+              out/${{ inputs.OUTDIR }}/trades.csv
+              out/${{ inputs.OUTDIR }}/gating_debug.csv
+              out/${{ inputs.OUTDIR }}/calibration_report.json
+              out/${{ inputs.OUTDIR }}/gate_waterfall.json
+            if-no-files-found: warn
