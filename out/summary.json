@@ -1,0 +1,30 @@
+{
+  "n_trades": 0,
+  "hit_rate": 0.0,
+  "mcc": 0.0,
+  "cum_pnl_bps": 0.0,
+  "used_prob_source": "p_hat",
+  "used_calib_keys": [
+    "_DEFAULT"
+  ],
+  "p_samples": {
+    "p_raw": 0.4998001733456821,
+    "p_qm": 0.4998001733456821,
+    "p_cal": 0.4998001733456821
+  },
+  "thr_before": 0.83,
+  "thr_after": 0.8499999999999998,
+  "p_ev_req_before": 0.7344899999910407,
+  "p_ev_req_after": 0.7444899999910407,
+  "guard_triggered": 200,
+  "reason_counts": {
+    "side": 1,
+    "in_box": 200,
+    "ofi": 200,
+    "persistence": 5,
+    "calibration": 200,
+    "ev": 200
+  },
+  "p_raw_mean": 0.4998001733456821,
+  "p_trend_mean": 0.4998001733456821
+}

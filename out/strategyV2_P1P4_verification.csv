@@ -1,0 +1,10 @@
+Group,Component,Operates,Evidence,Risk
+P1,QuantileMap/distribution,True,"psi=None, p_hist=Y",QM 적용/로그 없으면 분포 왜곡 가능
+P1,Isotonic(session×regime),False,missing,_default>20%면 키 미스매치
+P1,Guards(ECE/PSI->thr/EV/cap),False,"ece=0.4951998266543179, psi=None, guard_triggered=None",before/after 로그 필요
+P1,EV hysteresis/regime,False,"thr_entry_after=None, thr_exit_after=None",ev_net 기준 확인
+P1,OFI fusion,False,ofi_adj=None,thr/ev/tp 최종값 반영 필요
+P2,24bar loss cut,False,hold_bars/exit_reason,강제청산 여부 로그 필요
+P2,Partial/Timeout,False,"partial_exit or tp1_hit, timeout_hit",비율 산출 필요
+P3,Reporting(ECE/PSI/MCC/hist),True,diag_reliability.csv,리라이어빌리티 누락시 추적 어려움
+P4,Fail-Closed guards,False,guard_triggered=None,진단 누락시 게이트 강화 필요
