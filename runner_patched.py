@@ -205,10 +205,20 @@ def main():
         passed_calib = pop >= thr
         passed_persist = mom_k >= gate.k
         passed_ev = ev_bps >= gate.alpha_cost * frictions_bps
-        dbg = {"i":i,"side":side,"pop":pop,"thr":thr,
-               "passed_calib":bool(passed_calib),"mom_k_of_m":mom_k,
-               "passed_persist":bool(passed_persist),"ev_bps":ev_bps,
-               "passed_ev":bool(passed_ev),"in_box":bool(in_box),"ofi_ok":bool(ofi_ok)}
+        dbg = {
+            "i": i,
+            "side": side,
+            "pop": pop,
+            "thr": thr,
+            "regime": str(regime[i]),
+            "passed_calib": bool(passed_calib),
+            "mom_k_of_m": mom_k,
+            "passed_persist": bool(passed_persist),
+            "ev_bps": ev_bps,
+            "passed_ev": bool(passed_ev),
+            "in_box": bool(in_box),
+            "ofi_ok": bool(ofi_ok),
+        }
 
         if position==0:
             decision = passed_calib and passed_persist and passed_ev and (not in_box) and ofi_ok and side!=0
