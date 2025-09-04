@@ -40,7 +40,7 @@ entry:
   persistence:
     m: 5  # number of bars to inspect (spec default: 6)
     k: 3  # minimum aligned count (spec default: 4)
-    # NOTE: keep m/k consistent with specs/strategy_v2_spec.yml
+     # NOTE: params persist values override spec; mismatches will trigger a warning
   ofi:
     ema_len: 10
     align_window: 5
