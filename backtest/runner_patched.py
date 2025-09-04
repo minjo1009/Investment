@@ -410,12 +410,12 @@ def main():
 
             from sklearn.linear_model import LogisticRegression
             import joblib
+            # 로지스틱 회귀 모델 로딩 – 존재하지 않으면 에러를 발생시켜 학습을 강제
             model_path = "conf/model.pkl"
-            if os.path.exists(model_path):
-                clf = joblib.load(model_path)
-            else:
-                clf = LogisticRegression(max_iter=500)
-            p_raw = clf.predict_proba(X)[:,1]
+            if not os.path.exists(model_path):
+                raise FileNotFoundError("LogisticRegression model not found; run backtest_v2_train to create conf/model.pkl")
+            clf = joblib.load(model_path)
+            p_raw = clf.predict_proba(X)[:, 1]
         except Exception as e:
             print("ML-based p_raw generation failed, fallback to 0.5:", e)
             p_raw = np.full(len(df), 0.5)
@@ -805,17 +805,17 @@ def main():
         w = csv.DictWriter(f, fieldnames=fn); w.writeheader()
         for t in trades: w.writerow(t)
 
-    # gating debug: include fallback rows if no trades; record pop, y_true and gate statuses
+    # gating debug: 거래가 없더라도 전체 바에 대한 pop, y_true, regime 등 기록
     if args.debug_level in ('all','entries'):
         import pandas as _pd
         if not gating_dbg:
-            # Build basic debug rows for every bar to support calibration
-            y_true_vec = (pd.Series(C).shift(-1) - pd.Series(C)).fillna(0).gt(0).astype(int).to_numpy()
+            # 실제 거래가 없어도 학습용 데이터를 만들기 위해 fallback 레코드 생성
+            next_dir = (pd.Series(C).shift(-1) - pd.Series(C)).fillna(0).gt(0).astype(int).to_numpy()
             for idx in range(n):
                 gating_dbg.append({
                     "i": int(idx),
                     "pop": float(p_trend[idx]),
-                    "y_true": int(y_true_vec[idx]),
+                    "y_true": int(next_dir[idx]),
                     "regime": str(regime[idx]),
                     "side": int(side[idx]),
                     "passed_ev": bool(passed_ev[idx]),
@@ -825,7 +825,6 @@ def main():
                     "ofi_ok": bool(ofi_ok[idx])
                 })
         _pd.DataFrame(gating_dbg).to_csv(outdir / "gating_debug.csv", index=False)
-        # optional JSON (light)
         with open(outdir / "gating_debug.json", "w", encoding="utf-8") as f:
             json.dump(gating_dbg, f, ensure_ascii=False, indent=2)
 

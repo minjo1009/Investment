@@ -47,51 +47,47 @@ jobs:
 
       - name: Train model
         run: |
-          python - <<'PYCODE'
-          import pandas as pd, joblib, os, yaml
-          from sklearn.linear_model import LogisticRegression
+          python - <<'PY'
+import pandas as pd
+import numpy as np
+import yaml, joblib
+from sklearn.linear_model import LogisticRegression
 
-          # find preds_test.csv dynamically
-          preds_path, trades_path = None, None
-          for root, _, files in os.walk("_out_4u"):
-              if "preds_test.csv" in files:
-                  preds_path = os.path.join(root, "preds_test.csv")
-              if "trades.csv" in files:
-                  trades_path = os.path.join(root, "trades.csv")
+# 1. flags에서 임계치 읽기
+with open('conf/feature_flags.yml', 'r') as f:
+    flags = yaml.safe_load(f) or {}
+p_thr    = (flags.get('entry', {}) or {}).get('p_thr', {'range':0.55, 'trend':0.50})
+p_ev_req = (flags.get('ev',    {}) or {}).get('p_ev_req', {'range':0.55, 'trend':0.50})
 
-          if not preds_path or not trades_path:
-              raise FileNotFoundError("preds_test.csv or trades.csv not found in downloaded artifact")
+# 2. 데이터 로드 – preds_test.csv
+df = pd.read_csv('_out_4u/run/preds_test.csv')
 
-          preds = pd.read_csv(preds_path)
-          trades = pd.read_csv(trades_path)
+# 3. 라벨 생성: label 컬럼이 없거나 비어 있으면 p_trend 기준으로 생성
+if 'label' not in df.columns or df['label'].isnull().all():
+    def mk_label(row):
+        reg = row.get('regime', 'range')
+        thr = p_thr.get(reg, 0.5)
+        evr = p_ev_req.get(reg, 0.5)
+        return int((row['p_trend'] >= thr) and (row['p_trend'] >= evr))
+    df['label'] = df.apply(mk_label, axis=1)
 
-          if "label" not in preds.columns:
-              params = yaml.safe_load(open('conf/params_champion.yml'))
-              flags  = yaml.safe_load(open('conf/feature_flags.yml'))
-              p_thr = flags.get('entry', {}).get('p_thr', {})
-              ev_thr = flags.get('ev', {}).get('p_ev_req', {})
-              delta_p = params.get('ev_gate', {}).get('regime', {})
-              def label_row(row):
-                  regime = row.get('regime')
-                  thr = p_thr.get(regime, 0.5)
-                  ev_req = ev_thr.get(regime, 0.5)
-                  dp_min = delta_p.get(regime, {}).get('delta_p_min', 0.0)
-                  return int((row['p_trend'] >= thr) and ((row['p_trend'] - ev_req) >= dp_min))
-              preds['label'] = preds.apply(label_row, axis=1)
+# 4. 피처 누락 시 0으로 채움
+for col in ['p_trend','macd_hist','rsi','adx','ofi']:
+    if col not in df.columns:
+        df[col] = 0.0
 
-          features = [c for c in ["macd_hist","ofi","rsi","adx","p_trend","p_raw"] if c in preds.columns]
-          if not features:
-              raise RuntimeError("No valid features found in preds_test.csv")
+# 5. 클래스 수 확인 – 단일 클래스면 오류 발생
+X = df[['p_trend','macd_hist','rsi','adx','ofi']]
+y = df['label'].astype(int)
+if y.nunique() < 2:
+    raise ValueError("Training data has only one class; check p_thr/p_ev_req thresholds or backtest settings.")
 
-          X = preds[features].fillna(0.0).to_numpy()
-          y = preds["label"].astype(int).to_numpy()
-
-          clf = LogisticRegression(max_iter=500)
-          clf.fit(X, y)
-
-          joblib.dump(clf, "conf/model.pkl")
-          print("✅ Model trained and saved to conf/model.pkl")
-          PYCODE
+# 6. 로지스틱 회귀 학습 및 저장
+clf = LogisticRegression(max_iter=1000, solver='liblinear')
+clf.fit(X, y)
+joblib.dump(clf, 'conf/model.pkl')
+print('[INFO] LogisticRegression trained successfully and saved to conf/model.pkl')
+PY
 
       - name: Upload model
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
