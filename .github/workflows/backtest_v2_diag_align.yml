@@ -13,6 +13,18 @@ on:
         description: 'Glob pattern inside extracted data'
         required: true
         default: '*.csv'
+  workflow_call:
+    inputs:
+      GIT_REF:
+        required: false
+        type: string
+      DATA_ZIP:
+        required: true
+        type: string
+      CSV_GLOB:
+        required: true
+        type: string
+        default: '*.csv'
 
 jobs:
   diag_align:

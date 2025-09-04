@@ -111,8 +111,12 @@ def main():
     repo_root = Path('.').resolve()
     spec = load_yaml(repo_root / 'specs' / 'strategy_v2_spec.yml')
     params = load_yaml(Path(args.params))
-    flags = load_yaml(Path(args.flags)) if getattr(args, 'flags', None) else {}
+    # Default feature flags if not provided
+    flags_path = Path(args.flags) if getattr(args, 'flags', None) else Path('conf/feature_flags.yml')
+    flags = load_yaml(flags_path) if flags_path.exists() else {}
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
+    # Default calibrator path when omitted
+    calib_path = Path(args.calibrator) if getattr(args, 'calibrator', None) else Path('conf/calibrator_bins.json')
 
     # merge exits/costs from spec into params (defaults)
     exits = (((spec or {}).get('components', {}) or {}).get('exits', {}) or {})
@@ -285,8 +289,17 @@ def main():
 
     # ---------- Persistence m/k (vector) ----------
     conv = (((spec.get('components', {}) or {}).get('gating', {}) or {}).get('conviction', {}) or {})
-    pers = (conv.get('persistence', {}) or {})
-    m = int(pers.get('m', 4)); k = int(pers.get('k', 2))
+    # prefer params['entry']['persistence'] over spec
+    pers = (params.get('entry', {}).get('persistence', {}) or (conv.get('persistence', {}) or {}))
+    m = int(pers.get('m', 4))
+    k = int(pers.get('k', 2))
+    spec_pers = conv.get('persistence', {}) or {}
+    try:
+        sm = int(spec_pers.get('m', 4)); sk = int(spec_pers.get('k', 2))
+        if (m != sm) or (k != sk):
+            print(f"WARNING: persistence m/k mismatch params({m}/{k}) vs spec({sm}/{sk})", file=sys.stderr)
+    except Exception:
+        pass
     aligned01 = (np.sign(macd_diff) == np.sign(np.r_[macd_diff[0], macd_diff[:-1]])).astype(int)
     aligned_m = pd.Series(aligned01).rolling(m, min_periods=m).sum().fillna(0).astype(int).to_numpy()
     passed_persist = aligned_m >= k
@@ -378,29 +391,13 @@ def main():
                 "ofi": ofi
             }).fillna(0.0)
 
-            model_path = "conf/model.pkl"
-        # --- ML-based p_raw inference (no training inside) ---
-        try:
             from sklearn.linear_model import LogisticRegression
             import joblib
             model_path = "conf/model.pkl"
-            if os.path.exists(model_path):
-                clf = joblib.load(model_path)
-                p_raw = clf.predict_proba(X)[:,1]
-            else:
-                print("Model not found, fallback to 0.5")
-                p_raw = np.full(len(df), 0.5)
-        except Exception as e:
-            print("Inference failed, fallback to 0.5:", e)
-            p_raw = np.full(len(df), 0.5)
-
-            from sklearn.linear_model import LogisticRegression
-            import joblib
             if os.path.exists(model_path):
                 clf = joblib.load(model_path)
             else:
                 clf = LogisticRegression(max_iter=500)
-
             p_raw = clf.predict_proba(X)[:,1]
         except Exception as e:
             print("ML-based p_raw generation failed, fallback to 0.5:", e)
@@ -484,12 +481,11 @@ def main():
     else:
         p_trend = p_raw.copy()
         calib_json = None
-        if args.calibrator and Path(args.calibrator).exists():
-            try: calib_json = json.load(open(args.calibrator,'r',encoding='utf-8'))
-            except Exception: calib_json = None
-        elif Path('conf/calibrator_bins.json').exists():
-            try: calib_json = json.load(open('conf/calibrator_bins.json','r',encoding='utf-8'))
-            except Exception: calib_json = None
+        if calib_path.exists():
+            try:
+                calib_json = json.load(open(calib_path, 'r', encoding='utf-8'))
+            except Exception:
+                calib_json = None
         used_keys = set()
         if calib_json is not None:
             if isinstance(calib_json, dict) and 'maps' in calib_json:
@@ -741,10 +737,15 @@ def main():
             j += 1
 
     # ---------- Metrics ----------
+    # actual next-bar direction (+1/-1/0)
     actual = np.sign(pd.Series(C).shift(-1) - pd.Series(C)).fillna(0).to_numpy()
-    pred   = np.sign(p_trend - 0.5)
-    tp_ = int(((pred== 1)&(actual== 1)).sum()); tn_ = int(((pred==-1)&(actual==-1)).sum())
-    fp_ = int(((pred== 1)&(actual==-1)).sum()); fn_ = int(((pred==-1)&(actual== 1)).sum())
+    # prediction conditioned on entry gating and trade side
+    entry_cond = mask_entry
+    pred = np.zeros_like(p_trend)
+    pred[entry_cond & (side > 0)] = 1
+    pred[entry_cond & (side < 0)] = -1
+    tp_ = int(((pred == 1) & (actual == 1)).sum()); tn_ = int(((pred == -1) & (actual == -1)).sum())
+    fp_ = int(((pred == 1) & (actual == -1)).sum()); fn_ = int(((pred == -1) & (actual == 1)).sum())
     denom = math.sqrt(max((tp_+fp_)*(tp_+fn_)*(tn_+fp_)*(tn_+fn_), 1.0))
     mcc = float(((tp_*tn_) - (fp_*fn_)) / denom) if denom > 0 else 0.0
 
@@ -770,8 +771,8 @@ def main():
     summary['reason_counts'] = reason_counts
 
     # optional calibration metrics
-    if args.calibrator:
-        caldir = Path(args.calibrator).resolve().parent
+    if calib_path and calib_path.exists():
+        caldir = calib_path.resolve().parent
         try:
             summary['ece'] = float(json.load(open(caldir/'ece.json'))['ece'])
         except Exception:

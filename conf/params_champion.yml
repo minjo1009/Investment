@@ -38,8 +38,9 @@ entry:
     thr_entry: 0.88
     thr_exit: 0.82
   persistence:
-    m: 5
-    k: 3
+    m: 5  # number of bars to inspect (spec default: 6)
+    k: 3  # minimum aligned count (spec default: 4)
+    # NOTE: keep m/k consistent with specs/strategy_v2_spec.yml
   ofi:
     ema_len: 10
     align_window: 5

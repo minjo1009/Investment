@@ -2,9 +2,15 @@ name: Backtest V2 Train Model
 
 on:
   workflow_dispatch:
+  workflow_call:
 
 jobs:
+  diag_align:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "diag_align placeholder"
   train:
+    needs: diag_align
     runs-on: ubuntu-latest
     steps:
       - name: Validate pinned SHAs
@@ -40,7 +46,7 @@ jobs:
       - name: Train model
         run: |
           python - <<'PYCODE'
-          import pandas as pd, joblib, os
+          import pandas as pd, joblib, os, yaml
           from sklearn.linear_model import LogisticRegression
 
           # find preds_test.csv dynamically
@@ -58,12 +64,18 @@ jobs:
           trades = pd.read_csv(trades_path)
 
           if "label" not in preds.columns:
-              if "y" in trades.columns:
-                  preds["label"] = trades["y"]
-              elif "label" in trades.columns:
-                  preds["label"] = trades["label"]
-              else:
-                  preds["label"] = (preds["p_trend"] > 0.5).astype(int)
+              params = yaml.safe_load(open('conf/params_champion.yml'))
+              flags  = yaml.safe_load(open('conf/feature_flags.yml'))
+              p_thr = flags.get('entry', {}).get('p_thr', {})
+              ev_thr = flags.get('ev', {}).get('p_ev_req', {})
+              delta_p = params.get('ev_gate', {}).get('regime', {})
+              def label_row(row):
+                  regime = row.get('regime')
+                  thr = p_thr.get(regime, 0.5)
+                  ev_req = ev_thr.get(regime, 0.5)
+                  dp_min = delta_p.get(regime, {}).get('delta_p_min', 0.0)
+                  return int((row['p_trend'] >= thr) and ((row['p_trend'] - ev_req) >= dp_min))
+              preds['label'] = preds.apply(label_row, axis=1)
 
           features = [c for c in ["macd_hist","ofi","rsi","adx","p_trend","p_raw"] if c in preds.columns]
           if not features:
