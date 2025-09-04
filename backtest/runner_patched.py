@@ -331,6 +331,32 @@ def main():
             pass
         lin = beta0 + beta_macd*macd_z.to_numpy() + beta_ofi*ofi_z.to_numpy()
         p_raw = expit(lin)
+        # --- Enhanced Strategy V2 p_raw with VWAP + MACD + OFI + RSI + ADX ---
+        try:
+            # VWAP distance (normalized)
+            if 'vwap' in df.columns:
+                vwap_dist = (df['close'] - df['vwap']) / df['vwap']
+            else:
+                vwap_dist = np.zeros(len(df))
+
+            # Ensure indicators exist or compute fallbacks
+            macd_z = robust_z(df['macd_hist'], win=30).fillna(0.0) if 'macd_hist' in df.columns else 0
+            ofi_z = robust_z(df['ofi'], win=30).fillna(0.0) if 'ofi' in df.columns else 0
+            rsi_norm = (df['rsi'] / 100.0) if 'rsi' in df.columns else 0
+            adx_norm = (df['adx'] / 100.0) if 'adx' in df.columns else 0
+
+            lin = (
+                0.0
+                + 1.0 * vwap_dist
+                + 1.0 * macd_z
+                + 1.0 * ofi_z
+                + 0.5 * rsi_norm
+                + 0.5 * adx_norm
+            )
+            p_raw = expit(lin)
+        except Exception as e:
+            print("Enhanced VWAP+MACD+OFI+RSI+ADX p_raw adjustments skipped:", e)
+
         # --- Enhanced Strategy V2 adjustments ---
         try:
             # Regime adjustment
