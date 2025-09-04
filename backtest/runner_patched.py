@@ -292,7 +292,7 @@ def main():
     passed_persist = aligned_m >= k
 
     # ---------- Probability pipeline (vector) ----------
-    def robust_z(arr, win=30):
+    def robust_z(arr, win=200):
         s = pd.Series(arr)
         med = s.rolling(win, min_periods=win//2).median()
         mad = (s - med).abs().rolling(win, min_periods=win//2).median()
@@ -331,31 +331,68 @@ def main():
             pass
         lin = beta0 + beta_macd*macd_z.to_numpy() + beta_ofi*ofi_z.to_numpy()
         p_raw = expit(lin)
-        # --- Enhanced Strategy V2 p_raw with VWAP + MACD + OFI + RSI + ADX ---
+        # --- ML-based p_raw generation (VWAP + EMA + TBR + RSI + ADX + MACD + OFI) ---
         try:
-            # VWAP distance (normalized)
+            # VWAP distance and slope
             if 'vwap' in df.columns:
                 vwap_dist = (df['close'] - df['vwap']) / df['vwap']
+                vwap_slope = df['vwap'].diff()
             else:
                 vwap_dist = np.zeros(len(df))
+                vwap_slope = np.zeros(len(df))
 
-            # Ensure indicators exist or compute fallbacks
-            macd_z = robust_z(df['macd_hist'], win=30).fillna(0.0) if 'macd_hist' in df.columns else 0
-            ofi_z = robust_z(df['ofi'], win=30).fillna(0.0) if 'ofi' in df.columns else 0
-            rsi_norm = (df['rsi'] / 100.0) if 'rsi' in df.columns else 0
-            adx_norm = (df['adx'] / 100.0) if 'adx' in df.columns else 0
+            # EMA spreads
+            ema15 = df['close'].ewm(span=15).mean()
+            ema50 = df['close'].ewm(span=50).mean()
+            ema200 = df['close'].ewm(span=200).mean()
+            ema15_50 = ema15 - ema50
+            ema50_200 = ema50 - ema200
 
-            lin = (
-                0.0
-                + 1.0 * vwap_dist
-                + 1.0 * macd_z
-                + 1.0 * ofi_z
-                + 0.5 * rsi_norm
-                + 0.5 * adx_norm
-            )
-            p_raw = expit(lin)
+            # Taker Buy Ratio
+            if 'taker_buy_volume' in df.columns and 'volume' in df.columns:
+                tbr = (df['taker_buy_volume'] / df['volume']).fillna(0.0)
+            else:
+                tbr = np.zeros(len(df))
+
+            # Volatility (30-bar rolling std of log returns)
+            logret = np.log(df['close']/df['close'].shift())
+            vol = logret.rolling(30).std().fillna(0.0)
+
+            # RSI, ADX normalized
+            rsi_norm = (df['rsi']/100.0) if 'rsi' in df.columns else np.zeros(len(df))
+            adx_norm = (df['adx']/100.0) if 'adx' in df.columns else np.zeros(len(df))
+
+            macd_hist = df['macd_hist'] if 'macd_hist' in df.columns else np.zeros(len(df))
+            ofi = df['ofi'] if 'ofi' in df.columns else np.zeros(len(df))
+
+            X = pd.DataFrame({
+                "vwap_dist": vwap_dist,
+                "vwap_slope": vwap_slope,
+                "ema15_50": ema15_50,
+                "ema50_200": ema50_200,
+                "tbr": tbr,
+                "vol": vol,
+                "rsi": rsi_norm,
+                "adx": adx_norm,
+                "macd_hist": macd_hist,
+                "ofi": ofi
+            }).fillna(0.0)
+
+            model_path = "conf/model.pkl"
+            from sklearn.linear_model import LogisticRegression
+            import joblib
+            if os.path.exists(model_path):
+                clf = joblib.load(model_path)
+            else:
+                clf = LogisticRegression(max_iter=500)
+                dummy_y = (X["vwap_dist"] > 0).astype(int)
+                clf.fit(X, dummy_y)
+                joblib.dump(clf, model_path)
+
+            p_raw = clf.predict_proba(X)[:,1]
         except Exception as e:
-            print("Enhanced VWAP+MACD+OFI+RSI+ADX p_raw adjustments skipped:", e)
+            print("ML-based p_raw generation failed, fallback to 0.5:", e)
+            p_raw = np.full(len(df), 0.5)
 
         # --- Enhanced Strategy V2 adjustments ---
         try:
