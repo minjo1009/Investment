@@ -292,7 +292,7 @@ def main():
     passed_persist = aligned_m >= k
 
     # ---------- Probability pipeline (vector) ----------
-    def robust_z(arr, win=200):
+    def robust_z(arr, win=30):
         s = pd.Series(arr)
         med = s.rolling(win, min_periods=win//2).median()
         mad = (s - med).abs().rolling(win, min_periods=win//2).median()
