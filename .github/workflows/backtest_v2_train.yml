@@ -21,7 +21,7 @@ jobs:
           pip install pandas numpy scikit-learn joblib
 
       - name: Download backtest outputs
-        uses: actions/download-artifact@65a9edcfd5a6ba4c5a6c5efbd2911eac3a7d0a4e
+        uses: actions/download-artifact@f44cd7e8d2d4e88dbf068d7c6ddbfed230b18e6c
         with:
           name: backtest_v2_diag_align
           path: _out_4u/run
@@ -44,6 +44,9 @@ jobs:
                   preds["label"] = (preds["p_trend"] > 0.5).astype(int)
 
           features = [c for c in ["macd_hist","ofi","rsi","adx","p_trend","p_raw"] if c in preds.columns]
+          if not features:
+              raise RuntimeError("No valid features found in preds_test.csv")
+
           X = preds[features].fillna(0.0).to_numpy()
           y = preds["label"].astype(int).to_numpy()
 
