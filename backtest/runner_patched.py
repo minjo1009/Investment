@@ -379,15 +379,27 @@ def main():
             }).fillna(0.0)
 
             model_path = "conf/model.pkl"
+        # --- ML-based p_raw inference (no training inside) ---
+        try:
+            from sklearn.linear_model import LogisticRegression
+            import joblib
+            model_path = "conf/model.pkl"
+            if os.path.exists(model_path):
+                clf = joblib.load(model_path)
+                p_raw = clf.predict_proba(X)[:,1]
+            else:
+                print("Model not found, fallback to 0.5")
+                p_raw = np.full(len(df), 0.5)
+        except Exception as e:
+            print("Inference failed, fallback to 0.5:", e)
+            p_raw = np.full(len(df), 0.5)
+
             from sklearn.linear_model import LogisticRegression
             import joblib
             if os.path.exists(model_path):
                 clf = joblib.load(model_path)
             else:
                 clf = LogisticRegression(max_iter=500)
-                dummy_y = (X["vwap_dist"] > 0).astype(int)
-                clf.fit(X, dummy_y)
-                joblib.dump(clf, model_path)
 
             p_raw = clf.predict_proba(X)[:,1]
         except Exception as e:
@@ -858,4 +870,3 @@ if __name__ == "__main__":
     main()
 
 # ---------- EOF ----------
-
