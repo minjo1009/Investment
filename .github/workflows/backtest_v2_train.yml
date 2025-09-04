@@ -6,9 +6,11 @@ on:
 
 jobs:
   diag_align:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "diag_align placeholder"
+    uses: ./.github/workflows/backtest_v2_diag_align.yml
+    with:
+      DATA_ZIP: ETHUSDT_1min_2020_2025.zip
+      CSV_GLOB: '*.csv'
+    secrets: inherit
   train:
     needs: diag_align
     runs-on: ubuntu-latest
