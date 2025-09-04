@@ -20,22 +20,44 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas numpy scikit-learn joblib
 
+      - name: Download backtest outputs
+        uses: actions/download-artifact@9bc31d5ccc31df68a016c69f5c6ba1138c3d8996
+        with:
+          name: backtest_v2_diag_align
+          path: _out_4u/run
+
       - name: Train model
         run: |
           python - <<'PYCODE'
           import pandas as pd, joblib
           from sklearn.linear_model import LogisticRegression
+          from sklearn.model_selection import train_test_split
+
           preds = pd.read_csv("_out_4u/run/preds_test.csv")
           trades = pd.read_csv("_out_4u/run/trades.csv")
+
+          # Ensure label column
           if "label" not in preds.columns:
-              preds["label"] = trades.get("y", (preds["p_trend"]>0.5).astype(int))
+              if "y" in trades.columns:
+                  preds["label"] = trades["y"]
+              elif "label" in trades.columns:
+                  preds["label"] = trades["label"]
+              else:
+                  preds["label"] = (preds["p_trend"] > 0.5).astype(int)
+
           features = [c for c in ["macd_hist","ofi","rsi","adx","p_trend","p_raw"] if c in preds.columns]
+          if not features:
+              raise RuntimeError("No valid features found in preds_test.csv")
+
           X = preds[features].fillna(0.0).to_numpy()
           y = preds["label"].astype(int).to_numpy()
+
+          # Train logistic regression
           clf = LogisticRegression(max_iter=500)
           clf.fit(X, y)
+
           joblib.dump(clf, "conf/model.pkl")
-          print("Model saved to conf/model.pkl")
+          print("✅ Model trained and saved to conf/model.pkl")
           PYCODE
 
       - name: Upload model
