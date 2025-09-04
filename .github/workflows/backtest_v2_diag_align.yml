@@ -52,7 +52,9 @@ jobs:
             --params conf/params_champion.yml \
             --flags conf/feature_flags.yml \
             --outdir _out_4u/run \
+            --calibrator conf/calibrator_bins.json \
             --debug-level entries || true
+
           base="_out_4u/run"
           [ -s "$base/summary.json" ] || printf '{}' > "$base/summary.json"
           [ -s "$base/gating_debug.json" ] || echo "[]" > "$base/gating_debug.json"
