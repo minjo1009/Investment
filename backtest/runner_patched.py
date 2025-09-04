@@ -331,6 +331,24 @@ def main():
             pass
         lin = beta0 + beta_macd*macd_z.to_numpy() + beta_ofi*ofi_z.to_numpy()
         p_raw = expit(lin)
+        # --- Enhanced Strategy V2 adjustments ---
+        try:
+            # Regime adjustment
+            p_raw = np.where(regime == "trend", p_raw + 0.05, p_raw - 0.05)
+            # Divergence adjustment
+            if "divergence" in df.columns:
+                p_raw = np.where(df["divergence"] == "bull", p_raw + 0.05, p_raw)
+                p_raw = np.where(df["divergence"] == "bear", p_raw - 0.05, p_raw)
+            # Rolling balance (in_box)
+            if "in_box" in df.columns:
+                p_raw = np.where(df["in_box"], p_raw * 0.8, p_raw)
+            # Persistence
+            if "passed_persist" in locals():
+                p_raw = np.where(passed_persist, p_raw, p_raw * 0.7)
+            p_raw = np.clip(p_raw, 0.01, 0.99)
+        except Exception as e:
+            print("Enhanced adjustments skipped:", e)
+
         p_raw = np.clip(p_raw, 0.05, 0.95)  # guard rails
 
     p_raw_orig = p_raw.copy()
