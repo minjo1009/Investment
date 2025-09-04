@@ -26,7 +26,7 @@ components:
   gating:
     conviction:
       # default persistence m/k; runner prefers params.entry.persistence
-      # if these differ from conf/params_champion.yml a warning is printed
+      # if these differ from conf/params_champion.yml a warning is printed; params overrides spec
       persistence: {m: 6, k: 4}
       hysteresis: {thr_entry: 0.88, thr_exit: 0.82}
       ev_gate: {mode: probability, ev_margin_bps: 2.0, alpha_cost: 1.0}

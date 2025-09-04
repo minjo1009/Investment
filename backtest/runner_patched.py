@@ -113,10 +113,27 @@ def main():
     params = load_yaml(Path(args.params))
     # Default feature flags if not provided
     flags_path = Path(args.flags) if getattr(args, 'flags', None) else Path('conf/feature_flags.yml')
+    # Load feature flags; if missing or empty, warn and use sane defaults
     flags = load_yaml(flags_path) if flags_path.exists() else {}
+    if not flags:
+        print("[WARN] feature_flags not loaded; using default thresholds (range=0.55, trend=0.50)", file=sys.stderr)
+        flags = {
+            'entry': {'p_thr': {'range': 0.55, 'trend': 0.50}},
+            'ev':    {'p_ev_req': {'range': 0.55, 'trend': 0.50}},
+        }
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
-    # Default calibrator path when omitted
+    # Default calibrator path when omitted; if missing or unreadable, disable calibration
     calib_path = Path(args.calibrator) if getattr(args, 'calibrator', None) else Path('conf/calibrator_bins.json')
+    calib_json = None
+    if calib_path.exists():
+        try:
+            calib_json = json.load(open(calib_path,'r',encoding='utf-8'))
+        except Exception:
+            print(f"[WARN] calibrator read failed ({calib_path}); disabling calibration", file=sys.stderr)
+            calib_json = None
+    else:
+        print(f"[WARN] calibrator path {calib_path} missing; disabling calibration", file=sys.stderr)
+        calib_json = None
 
     # merge exits/costs from spec into params (defaults)
     exits = (((spec or {}).get('components', {}) or {}).get('exits', {}) or {})
@@ -480,12 +497,6 @@ def main():
         p_trend = df['p_hat_calibrated'].astype(float).to_numpy()
     else:
         p_trend = p_raw.copy()
-        calib_json = None
-        if calib_path.exists():
-            try:
-                calib_json = json.load(open(calib_path, 'r', encoding='utf-8'))
-            except Exception:
-                calib_json = None
         used_keys = set()
         if calib_json is not None:
             if isinstance(calib_json, dict) and 'maps' in calib_json:
@@ -590,6 +601,9 @@ def main():
         tp_adj[idx] = float(adj.get('tp_scale', 1.0))
     thr = thr + thr_add
     p_ev_req = p_ev_req + pev_add
+    # Clamp thresholds to avoid unrealistic values
+    thr = np.clip(thr, 0.50, 0.95)
+    p_ev_req = np.clip(p_ev_req, 0.50, 0.95)
     tp_i = tp_i * tp_adj
 
     ev_bps = p_trend*tp_i - (1.0 - p_trend)*sl_i - frictions_bps
@@ -623,9 +637,9 @@ def main():
         wk = pd.Series(ts).dt.weekday.to_numpy()
         hr = pd.Series(ts).dt.hour.to_numpy()
         mask = np.isin(wk, list(wbad))
-        for a,b in hbad:
-            mask |= ((hr>=a) & (hr<=b))
-        mask[::10] = True
+        for a, b in hbad:
+            mask |= ((hr >= a) & (hr <= b))
+        # 삭제: 테스트용으로 매 10번째 바를 차단하는 코드
         return mask
 
     session_cfg = params.get("session_blacklist") or {}
@@ -756,6 +770,8 @@ def main():
     else:
         summary = {"n_trades": 0, "hit_rate": 0.0, "mcc": mcc, "cum_pnl_bps": 0.0}
     summary['used_prob_source'] = prob_source
+    # Print reason counts to stderr for quick diagnosis
+    print(f"[INFO] Reason counts: {reason_counts}", file=sys.stderr)
     if 'used_keys' in locals():
         summary['used_calib_keys'] = sorted(used_keys)
     summary['p_samples'] = {
@@ -789,9 +805,25 @@ def main():
         w = csv.DictWriter(f, fieldnames=fn); w.writeheader()
         for t in trades: w.writerow(t)
 
-    # gating debug CSV (entries/exits only by default)
+    # gating debug: include fallback rows if no trades; record pop, y_true and gate statuses
     if args.debug_level in ('all','entries'):
         import pandas as _pd
+        if not gating_dbg:
+            # Build basic debug rows for every bar to support calibration
+            y_true_vec = (pd.Series(C).shift(-1) - pd.Series(C)).fillna(0).gt(0).astype(int).to_numpy()
+            for idx in range(n):
+                gating_dbg.append({
+                    "i": int(idx),
+                    "pop": float(p_trend[idx]),
+                    "y_true": int(y_true_vec[idx]),
+                    "regime": str(regime[idx]),
+                    "side": int(side[idx]),
+                    "passed_ev": bool(passed_ev[idx]),
+                    "passed_calib": bool(passed_calib[idx]),
+                    "passed_persist": bool(passed_persist[idx]),
+                    "in_box": bool(in_box[idx]),
+                    "ofi_ok": bool(ofi_ok[idx])
+                })
         _pd.DataFrame(gating_dbg).to_csv(outdir / "gating_debug.csv", index=False)
         # optional JSON (light)
         with open(outdir / "gating_debug.json", "w", encoding="utf-8") as f:
@@ -799,6 +831,7 @@ def main():
 
     # preds (optional)
     if not args.no_preds:
+        # label based on price change; note: training workflow will regenerate labels using thresholds
         label = (pd.Series(C).shift(-1) > pd.Series(C)).astype(float).fillna(0.0).to_numpy()
         audit = pd.DataFrame({
             tcol: df[tcol],
@@ -806,6 +839,8 @@ def main():
             "p_raw": p_raw,
             "ofi": ofi,
             "macd_hist": macd_diff,
+            "rsi": (df['rsi'] if 'rsi' in df.columns else np.nan),
+            "adx": (df['adx'] if 'adx' in df.columns else np.nan),
             "regime": regime,
             "label": label
         })
