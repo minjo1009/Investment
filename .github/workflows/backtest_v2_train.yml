@@ -2,6 +2,11 @@ name: Backtest V2 Train Model
 
 on:
   workflow_dispatch:
+    inputs:
+      DIAG_RUN_ID:
+        description: 'workflow run id of BacktestV2-Diagnostics-Alignment'
+        required: true
+        type: string
 
 jobs:
   train:
@@ -33,6 +38,8 @@ jobs:
         with:
           name: backtest_v2_diag_align
           path: _out_4u/run
+          run-id: ${{ inputs.DIAG_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Train model
         run: |
