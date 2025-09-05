@@ -82,15 +82,15 @@ jobs:
           fi
           # print reason counts for visibility
           python - <<'PY'
-            import json, os
-            base = "_out_4u/run/summary.json"
-            if os.path.exists(base):
-                try:
-                    data = json.load(open(base))
-                    print("Reason counts:", data.get("reason_counts"))
-                except Exception as e:
-                    print("Reason counts: <error>", e)
-          PY
+import json, os
+base = "_out_4u/run/summary.json"
+if os.path.exists(base):
+    try:
+        data = json.load(open(base))
+        print("Reason counts:", data.get("reason_counts"))
+    except Exception as e:
+        print("Reason counts: <error>", e)
+PY
 
       - name: (1) Diagnostics — numbers only
         shell: bash

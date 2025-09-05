@@ -362,63 +362,59 @@ def main():
         lin = beta0 + beta_macd*macd_z.to_numpy() + beta_ofi*ofi_z.to_numpy()
         p_raw = expit(lin)
         # --- ML-based p_raw generation (VWAP + EMA + TBR + RSI + ADX + MACD + OFI) ---
-        try:
-            # VWAP distance and slope
-            if 'vwap' in df.columns:
-                vwap_dist = (df['close'] - df['vwap']) / df['vwap']
-                vwap_slope = df['vwap'].diff()
-            else:
-                vwap_dist = np.zeros(len(df))
-                vwap_slope = np.zeros(len(df))
+        # VWAP distance and slope
+        if 'vwap' in df.columns:
+            vwap_dist = (df['close'] - df['vwap']) / df['vwap']
+            vwap_slope = df['vwap'].diff()
+        else:
+            vwap_dist = np.zeros(len(df))
+            vwap_slope = np.zeros(len(df))
 
-            # EMA spreads
-            ema15 = df['close'].ewm(span=15).mean()
-            ema50 = df['close'].ewm(span=50).mean()
-            ema200 = df['close'].ewm(span=200).mean()
-            ema15_50 = ema15 - ema50
-            ema50_200 = ema50 - ema200
+        # EMA spreads
+        ema15 = df['close'].ewm(span=15).mean()
+        ema50 = df['close'].ewm(span=50).mean()
+        ema200 = df['close'].ewm(span=200).mean()
+        ema15_50 = ema15 - ema50
+        ema50_200 = ema50 - ema200
 
-            # Taker Buy Ratio
-            if 'taker_buy_volume' in df.columns and 'volume' in df.columns:
-                tbr = (df['taker_buy_volume'] / df['volume']).fillna(0.0)
-            else:
-                tbr = np.zeros(len(df))
+        # Taker Buy Ratio
+        if 'taker_buy_volume' in df.columns and 'volume' in df.columns:
+            tbr = (df['taker_buy_volume'] / df['volume']).fillna(0.0)
+        else:
+            tbr = np.zeros(len(df))
 
-            # Volatility (30-bar rolling std of log returns)
-            logret = np.log(df['close']/df['close'].shift())
-            vol = logret.rolling(30).std().fillna(0.0)
+        # Volatility (30-bar rolling std of log returns)
+        logret = np.log(df['close']/df['close'].shift())
+        vol = logret.rolling(30).std().fillna(0.0)
 
-            # RSI, ADX normalized
-            rsi_norm = (df['rsi']/100.0) if 'rsi' in df.columns else np.zeros(len(df))
-            adx_norm = (df['adx']/100.0) if 'adx' in df.columns else np.zeros(len(df))
+        # RSI, ADX normalized
+        rsi_norm = (df['rsi']/100.0) if 'rsi' in df.columns else np.zeros(len(df))
+        adx_norm = (df['adx']/100.0) if 'adx' in df.columns else np.zeros(len(df))
 
-            macd_hist = df['macd_hist'] if 'macd_hist' in df.columns else np.zeros(len(df))
-            ofi = df['ofi'] if 'ofi' in df.columns else np.zeros(len(df))
+        macd_hist = df['macd_hist'] if 'macd_hist' in df.columns else np.zeros(len(df))
+        ofi = df['ofi'] if 'ofi' in df.columns else np.zeros(len(df))
 
-            X = pd.DataFrame({
-                "vwap_dist": vwap_dist,
-                "vwap_slope": vwap_slope,
-                "ema15_50": ema15_50,
-                "ema50_200": ema50_200,
-                "tbr": tbr,
-                "vol": vol,
-                "rsi": rsi_norm,
-                "adx": adx_norm,
-                "macd_hist": macd_hist,
-                "ofi": ofi
-            }).fillna(0.0)
+        X = pd.DataFrame({
+            "vwap_dist": vwap_dist,
+            "vwap_slope": vwap_slope,
+            "ema15_50": ema15_50,
+            "ema50_200": ema50_200,
+            "tbr": tbr,
+            "vol": vol,
+            "rsi": rsi_norm,
+            "adx": adx_norm,
+            "macd_hist": macd_hist,
+            "ofi": ofi
+        }).fillna(0.0)
 
-            from sklearn.linear_model import LogisticRegression
-            import joblib
-            # 로지스틱 모델이 없으면 즉시 에러 발생
-            model_path = "conf/model.pkl"
-            if not os.path.exists(model_path):
-                raise FileNotFoundError("LogisticRegression model not found; run backtest_v2_train to create conf/model.pkl")
-            clf = joblib.load(model_path)
-            p_raw = clf.predict_proba(X)[:, 1]
-        except Exception as e:
-            print("ML-based p_raw generation failed, fallback to 0.5:", e)
-            p_raw = np.full(len(df), 0.5)
+        from sklearn.linear_model import LogisticRegression
+        import joblib
+        # 로지스틱 모델이 없으면 즉시 에러 발생 (fallback 제거)
+        model_path = "conf/model.pkl"
+        if not os.path.exists(model_path):
+            raise FileNotFoundError("LogisticRegression model not found; run backtest_v2_train to create conf/model.pkl")
+        clf = joblib.load(model_path)
+        p_raw = clf.predict_proba(X)[:, 1]
 
         # --- Enhanced Strategy V2 adjustments ---
         try:
