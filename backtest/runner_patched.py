@@ -410,7 +410,7 @@ def main():
 
             from sklearn.linear_model import LogisticRegression
             import joblib
-            # 로지스틱 회귀 모델 로딩 – 존재하지 않으면 에러를 발생시켜 학습을 강제
+            # 로지스틱 모델이 없으면 즉시 에러 발생
             model_path = "conf/model.pkl"
             if not os.path.exists(model_path):
                 raise FileNotFoundError("LogisticRegression model not found; run backtest_v2_train to create conf/model.pkl")

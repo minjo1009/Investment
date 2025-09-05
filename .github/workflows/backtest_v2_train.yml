@@ -48,45 +48,45 @@ jobs:
       - name: Train model
         run: |
           python - <<'PY'
-            import pandas as pd
-            import numpy as np
-            import yaml, joblib
-            from sklearn.linear_model import LogisticRegression
+          import pandas as pd
+          import numpy as np
+          import yaml, joblib
+          from sklearn.linear_model import LogisticRegression
 
-            # 1. flags에서 임계치 읽기
-            with open('conf/feature_flags.yml', 'r') as f:
-                flags = yaml.safe_load(f) or {}
-            p_thr    = (flags.get('entry', {}) or {}).get('p_thr', {'range':0.55, 'trend':0.50})
-            p_ev_req = (flags.get('ev',    {}) or {}).get('p_ev_req', {'range':0.55, 'trend':0.50})
+          # 1. flags에서 임계치 읽기
+          with open('conf/feature_flags.yml', 'r') as f:
+              flags = yaml.safe_load(f) or {}
+          p_thr    = (flags.get('entry', {}) or {}).get('p_thr', {'range':0.55, 'trend':0.50})
+          p_ev_req = (flags.get('ev',    {}) or {}).get('p_ev_req', {'range':0.55, 'trend':0.50})
 
-            # 2. 데이터 로드 – preds_test.csv
-            df = pd.read_csv('_out_4u/run/preds_test.csv')
+          # 2. 데이터 로드 – preds_test.csv
+          df = pd.read_csv('_out_4u/run/preds_test.csv')
 
-            # 3. 라벨 생성: label 컬럼이 없거나 비어 있으면 p_trend 기준으로 생성
-            if 'label' not in df.columns or df['label'].isnull().all():
-                def mk_label(row):
-                    reg = row.get('regime', 'range')
-                    thr = p_thr.get(reg, 0.5)
-                    evr = p_ev_req.get(reg, 0.5)
-                    return int((row['p_trend'] >= thr) and (row['p_trend'] >= evr))
-                df['label'] = df.apply(mk_label, axis=1)
+          # 3. 라벨 생성: label 컬럼이 없거나 비어 있으면 p_trend 기준으로 생성
+          if 'label' not in df.columns or df['label'].isnull().all():
+              def mk_label(row):
+                  reg = row.get('regime', 'range')
+                  thr = p_thr.get(reg, 0.5)
+                  evr = p_ev_req.get(reg, 0.5)
+                  return int((row['p_trend'] >= thr) and (row['p_trend'] >= evr))
+              df['label'] = df.apply(mk_label, axis=1)
 
-            # 4. 피처 누락 시 0으로 채움
-            for col in ['p_trend','macd_hist','rsi','adx','ofi']:
-                if col not in df.columns:
-                    df[col] = 0.0
+          # 4. 피처 누락 시 0으로 채움
+          for col in ['p_trend','macd_hist','rsi','adx','ofi']:
+              if col not in df.columns:
+                  df[col] = 0.0
 
-            # 5. 클래스 수 확인 – 단일 클래스면 오류 발생
-            X = df[['p_trend','macd_hist','rsi','adx','ofi']]
-            y = df['label'].astype(int)
-            if y.nunique() < 2:
-                raise ValueError("Training data has only one class; check p_thr/p_ev_req thresholds or backtest settings.")
+          # 5. 클래스 수 확인 – 단일 클래스면 오류 발생
+          X = df[['p_trend','macd_hist','rsi','adx','ofi']]
+          y = df['label'].astype(int)
+          if y.nunique() < 2:
+              raise ValueError("Training data has only one class; check p_thr/p_ev_req thresholds or backtest settings.")
 
-            # 6. 로지스틱 회귀 학습 및 저장
-            clf = LogisticRegression(max_iter=1000, solver='liblinear')
-            clf.fit(X, y)
-            joblib.dump(clf, 'conf/model.pkl')
-            print('[INFO] LogisticRegression trained successfully and saved to conf/model.pkl')
+          # 6. 로지스틱 회귀 학습 및 저장
+          clf = LogisticRegression(max_iter=1000, solver='liblinear')
+          clf.fit(X, y)
+          joblib.dump(clf, 'conf/model.pkl')
+          print('[INFO] LogisticRegression trained successfully and saved to conf/model.pkl')
           PY
 
       - name: Upload model
