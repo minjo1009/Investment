@@ -429,16 +429,24 @@ def main():
 
         from sklearn.linear_model import LogisticRegression
         import joblib
+        from sklearn.utils.validation import check_is_fitted
         # 로지스틱 모델이 없으면 즉시 에러 발생 (fallback 제거)
         model_path = "conf/model.pkl"
         if not os.path.exists(model_path):
             raise FileNotFoundError("LogisticRegression model not found; run backtest_v2_train to create conf/model.pkl")
         clf = joblib.load(model_path)
+        try:
+            check_is_fitted(clf)
+        except Exception as e:
+            raise RuntimeError(f"Model in conf/model.pkl is not fitted: {e}")
         df.replace([np.inf, -np.inf], np.nan, inplace=True)
         df.fillna(0, inplace=True)
         INFER_FEATURES = ['p_trend', 'macd_hist', 'rsi', 'adx', 'ofi']
         feats = getattr(clf, 'feature_names_in_', None)
         infer_cols = list(feats) if feats is not None else INFER_FEATURES
+        missing = [c for c in infer_cols if c not in df.columns]
+        if missing:
+            raise RuntimeError(f"Missing features in data: {missing}")
         X = df[infer_cols].values
         p_raw = clf.predict_proba(X)[:, 1]
 

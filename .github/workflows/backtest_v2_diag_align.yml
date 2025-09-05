@@ -81,21 +81,21 @@ jobs:
             echo "[]" > "$base/gating_debug.json"
           fi
           # print reason counts for visibility
-          python - <<'PY'
-          import json, os
-          base = "_out_4u/run/summary.json"
-          if os.path.exists(base):
-              try:
-                  data = json.load(open(base))
-                  print("Reason counts:", data.get("reason_counts"))
-              except Exception as e:
-                  print("Reason counts: <error>", e)
+          sed -E 's/^[[:space:]]{12}//' <<'PY' | python -
+            import json, os
+            base = "_out_4u/run/summary.json"
+            if os.path.exists(base):
+                try:
+                    data = json.load(open(base))
+                    print("Reason counts:", data.get("reason_counts"))
+                except Exception as e:
+                    print("Reason counts:<error>", e)
           PY
 
       - name: (1) Diagnostics — numbers only
         shell: bash
         run: |
-          python - <<'PY'
+          sed -E 's/^[[:space:]]{10}//' <<'PY' | python -
           import os, json, pandas as pd, numpy as np, pathlib
           if os.environ.get('SKIP_ALIGN'):
               print('[SKIP] diagnostics skipped due to empty gating debug')
@@ -320,7 +320,7 @@ jobs:
             --calibrator conf/calibrator_bins.json \
             --outdir _out_4u/run \
             --debug-level entries || true
-          python - <<'PY'
+          sed -E 's/^[[:space:]]{10}//' <<'PY' | python -
           import os, json
           s=json.load(open("_out_4u/run/summary.json")) if os.path.exists("_out_4u/run/summary.json") else {}
           print("=== SUMMARY (post-align) ===")
@@ -329,7 +329,7 @@ jobs:
 
       - name: Verify feature outputs
         run: |
-          python - <<'PY'
+          sed -E 's/^[[:space:]]{10}//' <<'PY' | python -
 import pandas as pd, numpy as np, json
 df = pd.read_csv('_out_4u/run/preds_test.csv')
 need = ['rsi','adx','ofi']

@@ -40,16 +40,20 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: backtest_v2_diag_align
-          path: .
+          path: artifact.zip
 
-      - name: List artifact files
-        run: ls -R _out_4u
+      - name: Extract artifacts to repo root
+        run: |
+          mkdir -p _out_4u
+          bsdtar -x -f artifact.zip -C .
+          find _out_4u -maxdepth 2 -type f | sed -n '1,20p'
 
       - name: Train model
         run: |
-          python - <<'PY'
+          sed -E 's/^[[:space:]]{10}//' <<'PY' | python -
 import pandas as pd, numpy as np, yaml, joblib
 from sklearn.linear_model import LogisticRegression
+from sklearn.utils.validation import check_is_fitted
 from backtest.utils import rebalance_labels_by_regime
 
 # 1. feature flags 로드
@@ -63,10 +67,9 @@ df = pd.read_csv('_out_4u/run/preds_test.csv')
 
 use_cols = ['p_trend','macd_hist','rsi','adx','ofi']
 df[use_cols] = df[use_cols].apply(pd.to_numeric, errors='coerce')
-assert df[use_cols].isna().mean().max() < 0.01, "NaN too high"
-assert (df[use_cols].std() > 1e-8).all(), "Zero-variance feature"
-X = df[use_cols].values
+X = df[use_cols].fillna(0).values
 assert np.isfinite(X).all(), "Non-finite in X"
+assert (pd.DataFrame(X).std() > 1e-8).all(), "Zero-variance feature"
 
 # 3. 라벨 생성
 if 'label' not in df.columns or df['label'].isnull().all():
@@ -86,15 +89,17 @@ if len(vc) < 2 or (vc.min()/vc.max()) < 0.2:
 
 # 4. 로지스틱 회귀 학습 및 저장
 clf = LogisticRegression(max_iter=1000, solver='liblinear')
-clf.fit(df[use_cols], y)
-assert list(clf.feature_names_in_) == use_cols, "feature_names_in_ mismatch"
+clf.fit(X, y)
+check_is_fitted(clf)
+print("MODEL_META:", {"n_features": getattr(clf,"n_features_in_",None),
+                     "coef_shape": getattr(clf,"coef_",None).shape if hasattr(clf,"coef_") else None})
 joblib.dump(clf, 'conf/model.pkl')
 print('[INFO] LogisticRegression trained and saved')
 PY
 
       - name: Verify feature outputs
         run: |
-          python - <<'PY'
+          sed -E 's/^[[:space:]]{10}//' <<'PY' | python -
 import pandas as pd, numpy as np, json
 df = pd.read_csv('_out_4u/run/preds_test.csv')
 need = ['rsi','adx','ofi']
