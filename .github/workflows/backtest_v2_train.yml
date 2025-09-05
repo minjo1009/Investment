@@ -62,6 +62,7 @@ jobs:
 
           # 2. preds_test.csv 로드
           df = pd.read_csv('_out_4u/run/preds_test.csv')
+          df.fillna(0, inplace=True)
 
           # 3. 라벨 생성
           if 'label' not in df.columns or df['label'].isnull().all():
