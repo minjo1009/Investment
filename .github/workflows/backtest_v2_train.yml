@@ -46,8 +46,9 @@ jobs:
         run: ls -R _out_4u
 
       - name: Train model
-        run: |
-          python - <<'PY'
+          run: |
+            python - <<'PY'
+# Auto-generated training script
 import pandas as pd
 import numpy as np
 import yaml, joblib

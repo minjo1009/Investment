@@ -96,215 +96,215 @@ PY
         shell: bash
         run: |
           python - <<'PY'
-          import os, json, pandas as pd, numpy as np, pathlib
-          if os.environ.get('SKIP_ALIGN'):
-              print('[SKIP] diagnostics skipped due to empty gating debug')
-              raise SystemExit(0)
+import os, json, pandas as pd, numpy as np, pathlib
+if os.environ.get('SKIP_ALIGN'):
+    print('[SKIP] diagnostics skipped due to empty gating debug')
+    raise SystemExit(0)
 
-          BASE = "_out_4u/run"
-          GJ   = os.path.join(BASE,"gating_debug.json")
-          OUTD = pathlib.Path("_out_4u/diagnostics"); OUTD.mkdir(parents=True, exist_ok=True)
+BASE = "_out_4u/run"
+GJ   = os.path.join(BASE,"gating_debug.json")
+OUTD = pathlib.Path("_out_4u/diagnostics"); OUTD.mkdir(parents=True, exist_ok=True)
 
-          def load_dbg(p):
-              if not (os.path.exists(p) and os.path.getsize(p)>0): return pd.DataFrame()
-              for args in ({}, {'lines':True}):
-                  try: return pd.read_json(p, **args)
-                  except Exception: pass
-              return pd.DataFrame()
+def load_dbg(p):
+    if not (os.path.exists(p) and os.path.getsize(p)>0): return pd.DataFrame()
+    for args in ({}, {'lines':True}):
+        try: return pd.read_json(p, **args)
+        except Exception: pass
+    return pd.DataFrame()
 
-          dbg = load_dbg(GJ)
+dbg = load_dbg(GJ)
 
-          # Canonicalize columns (robust)
-          ren = {}
-          if 'regime' not in dbg.columns and 'regime_name' in dbg.columns: ren['regime_name']='regime'
-          if 'pop'    not in dbg.columns:
-              for c in ['p_hat','pop_cal','p_cal','p_hat_calibrated','prob','proba']:
-                  if c in dbg.columns: ren[c]='pop'; break
-          if 'y_true' not in dbg.columns:
-              for c in ['y','label','target']: 
-                  if c in dbg.columns: ren[c]='y_true'; break
-          if ren: dbg = dbg.rename(columns=ren)
+# Canonicalize columns (robust)
+ren = {}
+if 'regime' not in dbg.columns and 'regime_name' in dbg.columns: ren['regime_name']='regime'
+if 'pop'    not in dbg.columns:
+    for c in ['p_hat','pop_cal','p_cal','p_hat_calibrated','prob','proba']:
+        if c in dbg.columns: ren[c]='pop'; break
+if 'y_true' not in dbg.columns:
+    for c in ['y','label','target']:
+        if c in dbg.columns: ren[c]='y_true'; break
+if ren: dbg = dbg.rename(columns=ren)
 
-          # 1) Calibration bins
-          calib_tbl = pd.DataFrame()
-          rmse = None
-          if {'pop','y_true'}.issubset(dbg.columns):
-              d2 = dbg.dropna(subset=['pop','y_true']).copy()
-              bins = np.linspace(0,1,11)
-              d2['p_bin'] = pd.cut(d2['pop'].astype(float), bins, include_lowest=True)
-              calib_tbl = d2.groupby('p_bin').agg(pop_mean=('pop','mean'),
-                                                  y_rate=('y_true','mean'),
-                                                  n=('y_true','size')).reset_index()
-              w = calib_tbl['n'].values
-              rmse = float(np.sqrt(((calib_tbl['pop_mean']-calib_tbl['y_rate'])**2 * w).sum() / max(1,w.sum())))
+# 1) Calibration bins
+calib_tbl = pd.DataFrame()
+rmse = None
+if {'pop','y_true'}.issubset(dbg.columns):
+    d2 = dbg.dropna(subset=['pop','y_true']).copy()
+    bins = np.linspace(0,1,11)
+    d2['p_bin'] = pd.cut(d2['pop'].astype(float), bins, include_lowest=True)
+    calib_tbl = d2.groupby('p_bin').agg(pop_mean=('pop','mean'),
+                                        y_rate=('y_true','mean'),
+                                        n=('y_true','size')).reset_index()
+    w = calib_tbl['n'].values
+    rmse = float(np.sqrt(((calib_tbl['pop_mean']-calib_tbl['y_rate'])**2 * w).sum() / max(1,w.sum())))
 
-          # 2) Regime p_thr–MCC scan
-          scan_df = pd.DataFrame()
-          rows=[]
-          if {'regime','pop','y_true'}.issubset(dbg.columns):
-              df = dbg.dropna(subset=['regime','pop','y_true']).copy()
-              for r,g in df.groupby('regime'):
-                  y = g['y_true'].astype(int).to_numpy()
-                  p = g['pop'].astype(float).to_numpy()
-                  for thr in np.linspace(0.50,0.80,31):
-                      pred = (p>=thr).astype(int)
-                      tp=int(((pred==1)&(y==1)).sum()); tn=int(((pred==0)&(y==0)).sum())
-                      fp=int(((pred==1)&(y==0)).sum()); fn=int(((pred==0)&(y==1)).sum())
-                      den = np.sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
-                      mcc = float(((tp*tn - fp*fn)/den)) if den>0 else 0.0
-                      rows.append({'regime':r,'thr':float(thr),'mcc':mcc})
-              scan_df = pd.DataFrame(rows)
+# 2) Regime p_thr–MCC scan
+scan_df = pd.DataFrame()
+rows=[]
+if {'regime','pop','y_true'}.issubset(dbg.columns):
+    df = dbg.dropna(subset=['regime','pop','y_true']).copy()
+    for r,g in df.groupby('regime'):
+        y = g['y_true'].astype(int).to_numpy()
+        p = g['pop'].astype(float).to_numpy()
+        for thr in np.linspace(0.50,0.80,31):
+            pred = (p>=thr).astype(int)
+            tp=int(((pred==1)&(y==1)).sum()); tn=int(((pred==0)&(y==0)).sum())
+            fp=int(((pred==1)&(y==0)).sum()); fn=int(((pred==0)&(y==1)).sum())
+            den = np.sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
+            mcc = float(((tp*tn - fp*fn)/den)) if den>0 else 0.0
+            rows.append({'regime':r,'thr':float(thr),'mcc':mcc})
+    scan_df = pd.DataFrame(rows)
 
-          # 3) Policy scale summary (TP/SL/Hold)
-          pol = {}
-          for k in ['tp_bps_i','sl_bps_i','min_hold','max_hold']:
-              if k in dbg.columns:
-                  v=pd.to_numeric(dbg[k], errors='coerce')
-                  pol[k+'_mean']=float(v.mean())
-                  pol[k+'_p50']=float(v.quantile(0.5))
-                  pol[k+'_p90']=float(v.quantile(0.9))
+# 3) Policy scale summary (TP/SL/Hold)
+pol = {}
+for k in ['tp_bps_i','sl_bps_i','min_hold','max_hold']:
+    if k in dbg.columns:
+        v=pd.to_numeric(dbg[k], errors='coerce')
+        pol[k+'_mean']=float(v.mean())
+        pol[k+'_p50']=float(v.quantile(0.5))
+        pol[k+'_p90']=float(v.quantile(0.9))
 
-          # Save
-          calib_tbl.to_csv(OUTD/'calibration_bins.csv', index=False)
-          scan_df.to_csv(OUTD/'regime_threshold_scan.csv', index=False)
-          pd.DataFrame([pol]).to_csv(OUTD/'policy_summary.csv', index=False)
-          json.dump({
-              'calibration_rmse': rmse,
-              'policy_summary': pol,
-              'regime_threshold_scan_top': (
-                  scan_df.sort_values(['regime','mcc'], ascending=[True,False]).groupby('regime').head(5).to_dict(orient='records')
-                  if not scan_df.empty else []
-              ),
-              'notes': {'normalized': ren}
-          }, open(OUTD/'diagnostics.json','w'), ensure_ascii=False, indent=2)
+# Save
+calib_tbl.to_csv(OUTD/'calibration_bins.csv', index=False)
+scan_df.to_csv(OUTD/'regime_threshold_scan.csv', index=False)
+pd.DataFrame([pol]).to_csv(OUTD/'policy_summary.csv', index=False)
+json.dump({
+    'calibration_rmse': rmse,
+    'policy_summary': pol,
+    'regime_threshold_scan_top': (
+        scan_df.sort_values(['regime','mcc'], ascending=[True,False]).groupby('regime').head(5).to_dict(orient='records')
+        if not scan_df.empty else []
+    ),
+    'notes': {'normalized': ren}
+}, open(OUTD/'diagnostics.json','w'), ensure_ascii=False, indent=2)
 
-          print("=== DIAGNOSTICS ===")
-          print("calibration_rmse:", rmse)
-          if not scan_df.empty:
-              top = scan_df.sort_values(['regime','mcc'], ascending=[True,False]).groupby('regime').head(1)
-              print("best_thr_by_regime:", top[['regime','thr','mcc']].to_dict(orient='records'))
-          else:
-              print("best_thr_by_regime: []")
-          print("policy_summary:", pol)
-          PY
+print("=== DIAGNOSTICS ===")
+print("calibration_rmse:", rmse)
+if not scan_df.empty:
+    top = scan_df.sort_values(['regime','mcc'], ascending=[True,False]).groupby('regime').head(1)
+    print("best_thr_by_regime:", top[['regime','thr','mcc']].to_dict(orient='records'))
+else:
+    print("best_thr_by_regime: []")
+print("policy_summary:", pol)
+PY
 
       - name: (2) Alignment — isotonic per regime -> thresholds + EV align
         shell: bash
         run: |
           python - <<'PY'
-          import os, json, pandas as pd, numpy as np, yaml, pathlib
-          from sklearn.isotonic import IsotonicRegression
-          if os.environ.get('SKIP_ALIGN'):
-              print('[SKIP] alignment skipped due to empty gating debug')
-              raise SystemExit(0)
+import os, json, pandas as pd, numpy as np, yaml, pathlib
+from sklearn.isotonic import IsotonicRegression
+if os.environ.get('SKIP_ALIGN'):
+    print('[SKIP] alignment skipped due to empty gating debug')
+    raise SystemExit(0)
 
-          BASE = "_out_4u/run"; GJ = os.path.join(BASE,"gating_debug.json")
-          OUT = pathlib.Path("_out_4u"); OUT.mkdir(parents=True, exist_ok=True)
+BASE = "_out_4u/run"; GJ = os.path.join(BASE,"gating_debug.json")
+OUT = pathlib.Path("_out_4u"); OUT.mkdir(parents=True, exist_ok=True)
 
-          def load_dbg(p):
-              if not (os.path.exists(p) and os.path.getsize(p)>0): return pd.DataFrame()
-              for args in ({}, {'lines':True}):
-                  try: return pd.read_json(p, **args)
-                  except Exception: pass
-              return pd.DataFrame()
+def load_dbg(p):
+    if not (os.path.exists(p) and os.path.getsize(p)>0): return pd.DataFrame()
+    for args in ({}, {'lines':True}):
+        try: return pd.read_json(p, **args)
+        except Exception: pass
+    return pd.DataFrame()
 
-          dbg = load_dbg(GJ)
+dbg = load_dbg(GJ)
 
-          # Canonicalize
-          ren={}
-          if 'regime' not in dbg.columns and 'regime_name' in dbg.columns: ren['regime_name']='regime'
-          if 'pop'    not in dbg.columns:
-              for c in ['p_hat','pop_cal','p_cal','p_hat_calibrated','prob','proba']:
-                  if c in dbg.columns: ren[c]='pop'; break
-          if 'y_true' not in dbg.columns:
-              for c in ['y','label','target']: 
-                  if c in dbg.columns: ren[c]='y_true'; break
-          if ren: dbg = dbg.rename(columns=ren)
+# Canonicalize
+ren={}
+if 'regime' not in dbg.columns and 'regime_name' in dbg.columns: ren['regime_name']='regime'
+if 'pop'    not in dbg.columns:
+    for c in ['p_hat','pop_cal','p_cal','p_hat_calibrated','prob','proba']:
+        if c in dbg.columns: ren[c]='pop'; break
+if 'y_true' not in dbg.columns:
+    for c in ['y','label','target']:
+        if c in dbg.columns: ren[c]='y_true'; break
+if ren: dbg = dbg.rename(columns=ren)
 
-          need = {'pop','y_true','regime'}
-          if not need.issubset(dbg.columns):
-              print("[SKIP] missing columns for alignment:", need - set(dbg.columns)); raise SystemExit(0)
+need = {'pop','y_true','regime'}
+if not need.issubset(dbg.columns):
+    print("[SKIP] missing columns for alignment:", need - set(dbg.columns)); raise SystemExit(0)
 
-          # 시간 정렬(가능하면)
-          for c in ['ts','timestamp','time','datetime','dt']:
-              if c in dbg.columns:
-                  try: dbg = dbg.sort_values(c); break
-                  except Exception: pass
+# 시간 정렬(가능하면)
+for c in ['ts','timestamp','time','datetime','dt']:
+    if c in dbg.columns:
+        try: dbg = dbg.sort_values(c); break
+        except Exception: pass
 
-          cut = int(len(dbg)*0.7)
-          train, valid = dbg.iloc[:cut].copy(), dbg.iloc[cut:].copy()
+cut = int(len(dbg)*0.7)
+train, valid = dbg.iloc[:cut].copy(), dbg.iloc[cut:].copy()
 
-          # Regime-wise isotonic -> JSON calibrator with xs/ys
-          maps = {}
-          def fit_iso(df):
-              iso = IsotonicRegression(y_min=0, y_max=1, out_of_bounds='clip')
-              iso.fit(df['pop'].astype(float), df['y_true'].astype(int))
-              xs = np.linspace(0,1,51)
-              ys = iso.transform(xs)
-              return xs.tolist(), ys.tolist(), iso
+# Regime-wise isotonic -> JSON calibrator with xs/ys
+maps = {}
+def fit_iso(df):
+    iso = IsotonicRegression(y_min=0, y_max=1, out_of_bounds='clip')
+    iso.fit(df['pop'].astype(float), df['y_true'].astype(int))
+    xs = np.linspace(0,1,51)
+    ys = iso.transform(xs)
+    return xs.tolist(), ys.tolist(), iso
 
-          isos = {}
-          for r, g in train.dropna(subset=['pop','y_true','regime']).groupby('regime'):
-              xs, ys, iso = fit_iso(g)
-              maps[f"regime={r}"] = {'xs': xs, 'ys': ys}
-              isos[r]=iso
+isos = {}
+for r, g in train.dropna(subset=['pop','y_true','regime']).groupby('regime'):
+    xs, ys, iso = fit_iso(g)
+    maps[f"regime={r}"] = {'xs': xs, 'ys': ys}
+    isos[r]=iso
 
-          # DEFAULT map (fallback)
-          if not maps:
-              xs, ys, iso = fit_iso(train.dropna(subset=['pop','y_true']))
-              maps["_DEFAULT"] = {'xs': xs, 'ys': ys}
-              isos['_DEFAULT']=iso
+# DEFAULT map (fallback)
+if not maps:
+    xs, ys, iso = fit_iso(train.dropna(subset=['pop','y_true']))
+    maps["_DEFAULT"] = {'xs': xs, 'ys': ys}
+    isos['_DEFAULT']=iso
 
-          calib = {'maps': maps}
-          json.dump(calib, open('conf/calibrator_bins.json','w'), ensure_ascii=False, indent=2)
+calib = {'maps': maps}
+json.dump(calib, open('conf/calibrator_bins.json','w'), ensure_ascii=False, indent=2)
 
-          # Apply to valid -> pop_cal
-          def apply_iso(row):
-              r = row.get('regime')
-              p = float(row.get('pop', 0.5))
-              iso = isos.get(r) or isos.get('_DEFAULT')
-              return float(iso.transform([p])[0]) if iso is not None else p
+# Apply to valid -> pop_cal
+def apply_iso(row):
+    r = row.get('regime')
+    p = float(row.get('pop', 0.5))
+    iso = isos.get(r) or isos.get('_DEFAULT')
+    return float(iso.transform([p])[0]) if iso is not None else p
 
-          valid['pop_cal'] = valid.apply(apply_iso, axis=1)
+valid['pop_cal'] = valid.apply(apply_iso, axis=1)
 
-          # Scan thresholds on calibrated prob
-          rows=[]
-          def MCC(tp, tn, fp, fn):
-              den=((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))**0.5
-              return float(((tp*tn - fp*fn)/den)) if den>0 else 0.0
+# Scan thresholds on calibrated prob
+rows=[]
+def MCC(tp, tn, fp, fn):
+    den=((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))**0.5
+    return float(((tp*tn - fp*fn)/den)) if den>0 else 0.0
 
-          for r,g in valid.dropna(subset=['pop_cal','y_true','regime']).groupby('regime'):
-              y = g['y_true'].astype(int).to_numpy()
-              p = g['pop_cal'].astype(float).to_numpy()
-              best_m, best_thr = -1.0, 0.60
-              for thr in np.linspace(0.55,0.80,26):
-                  pred=(p>=thr).astype(int)
-                  tp=int(((pred==1)&(y==1)).sum()); tn=int(((pred==0)&(y==0)).sum())
-                  fp=int(((pred==1)&(y==0)).sum()); fn=int(((pred==0)&(y==1)).sum())
-                  m=MCC(tp,tn,fp,fn); rows.append({'regime':r,'thr':float(thr),'mcc':m})
-                  if m>best_m: best_m, best_thr = m, float(thr)
-              maps[f"regime={r}"]['best_thr']=best_thr  # annotate
+for r,g in valid.dropna(subset=['pop_cal','y_true','regime']).groupby('regime'):
+    y = g['y_true'].astype(int).to_numpy()
+    p = g['pop_cal'].astype(float).to_numpy()
+    best_m, best_thr = -1.0, 0.60
+    for thr in np.linspace(0.55,0.80,26):
+        pred=(p>=thr).astype(int)
+        tp=int(((pred==1)&(y==1)).sum()); tn=int(((pred==0)&(y==0)).sum())
+        fp=int(((pred==1)&(y==0)).sum()); fn=int(((pred==0)&(y==1)).sum())
+        m=MCC(tp,tn,fp,fn); rows.append({'regime':r,'thr':float(thr),'mcc':m})
+        if m>best_m: best_m, best_thr = m, float(thr)
+    maps[f"regime={r}"]['best_thr']=best_thr  # annotate
 
-          import pandas as pd
-          pd.DataFrame(rows).to_csv(OUT/'alignment_threshold_scan.csv', index=False)
-          json.dump(valid[['regime','pop','y_true','pop_cal']].to_dict(orient='records'),
-                    open(OUT/'calibrated_tail.json','w'), ensure_ascii=False, indent=2)
+import pandas as pd
+pd.DataFrame(rows).to_csv(OUT/'alignment_threshold_scan.csv', index=False)
+json.dump(valid[['regime','pop','y_true','pop_cal']].to_dict(orient='records'),
+          open(OUT/'calibrated_tail.json','w'), ensure_ascii=False, indent=2)
 
-          # Update feature flags (entry.p_thr & ev.p_ev_req) with best_thr
-          FF = "conf/feature_flags.yml"
-          import yaml
-          y = yaml.safe_load(open(FF)) if os.path.exists(FF) else {}
-          y.setdefault('entry',{}); y['entry'].setdefault('p_thr',{})
-          thr_by_regime = {k.split('=',1)[1]: v['best_thr'] for k,v in maps.items() if 'best_thr' in v and k.startswith('regime=')}
-          if thr_by_regime:
-              y['entry']['p_thr'].update(thr_by_regime)
-              y.setdefault('ev',{}); y['ev']['p_ev_req'] = dict(y['entry']['p_thr'])
-          yaml.safe_dump(y, open(FF,'w'), sort_keys=False)
+# Update feature flags (entry.p_thr & ev.p_ev_req) with best_thr
+FF = "conf/feature_flags.yml"
+import yaml
+y = yaml.safe_load(open(FF)) if os.path.exists(FF) else {}
+y.setdefault('entry',{}); y['entry'].setdefault('p_thr',{})
+thr_by_regime = {k.split('=',1)[1]: v['best_thr'] for k,v in maps.items() if 'best_thr' in v and k.startswith('regime=')}
+if thr_by_regime:
+    y['entry']['p_thr'].update(thr_by_regime)
+    y.setdefault('ev',{}); y['ev']['p_ev_req'] = dict(y['entry']['p_thr'])
+yaml.safe_dump(y, open(FF,'w'), sort_keys=False)
 
-          print("=== ALIGNMENT ===")
-          print("p_thr_by_regime:", thr_by_regime)
-          print("[updated] conf/feature_flags.yml & conf/calibrator_bins.json")
-          PY
+print("=== ALIGNMENT ===")
+print("p_thr_by_regime:", thr_by_regime)
+print("[updated] conf/feature_flags.yml & conf/calibrator_bins.json")
+PY
 
       - name: Re-run (post-alignment) & print summary
         shell: bash
@@ -319,11 +319,11 @@ PY
             --outdir _out_4u/run \
             --debug-level entries || true
           python - <<'PY'
-          import os, json
-          s=json.load(open("_out_4u/run/summary.json")) if os.path.exists("_out_4u/run/summary.json") else {}
-          print("=== SUMMARY (post-align) ===")
-          print({k:s.get(k) for k in ["winrate","mcc","num_trades","cum_pnl_bps"]})
-          PY
+import os, json
+s=json.load(open("_out_4u/run/summary.json")) if os.path.exists("_out_4u/run/summary.json") else {}
+print("=== SUMMARY (post-align) ===")
+print({k:s.get(k) for k in ["winrate","mcc","num_trades","cum_pnl_bps"]})
+PY
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

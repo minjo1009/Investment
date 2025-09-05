@@ -158,15 +158,51 @@ def main():
 
     # Probability
     if 'p_hat' in df.columns:
-        p_raw = df['p_hat'].astype(float).clip(0,1).values
+        p_trend = df['p_hat'].astype(float).clip(0,1).values
     else:
+        # baseline probability from MACD/OFI score (used as feature)
         macd_z = (macd_diff - pd.Series(macd_diff).rolling(100, min_periods=10).mean()) / (pd.Series(macd_diff).rolling(100, min_periods=10).std()+1e-9)
         ofi_z = (df['ofi'] - pd.Series(df['ofi']).rolling(100, min_periods=10).mean()) / (pd.Series(df['ofi']).rolling(100, min_periods=10).std()+1e-9)
         score = np.tanh(macd_z.fillna(0) + ofi_z.fillna(0))
-        p_raw = ((score - score.min()) / (score.max() - score.min() + 1e-9)).fillna(0.5).values
-    if 'p_hat_calibrated' in df.columns:
-        p_trend = df['p_hat_calibrated'].astype(float).clip(0,1).values
-    else:
+        p_base = ((score - score.min()) / (score.max() - score.min() + 1e-9))
+
+        # extra features for logistic model
+        def _rsi(close, n=14):
+            delta = close.diff()
+            up = delta.clip(lower=0).ewm(alpha=1/n, adjust=False).mean()
+            down = (-delta.clip(upper=0)).ewm(alpha=1/n, adjust=False).mean()
+            rs = up / (down + 1e-9)
+            return 100 - (100 / (1 + rs))
+
+        def _adx(high, low, close, n=14):
+            plus_dm = high.diff().clip(lower=0)
+            minus_dm = (-low.diff()).clip(lower=0)
+            tr1 = high - low
+            tr2 = (high - close.shift()).abs()
+            tr3 = (low - close.shift()).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.ewm(alpha=1/n, adjust=False).mean()
+            plus_di = 100 * plus_dm.ewm(alpha=1/n, adjust=False).mean() / (atr + 1e-9)
+            minus_di = 100 * minus_dm.ewm(alpha=1/n, adjust=False).mean() / (atr + 1e-9)
+            dx = ((plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)) * 100
+            return dx.ewm(alpha=1/n, adjust=False).mean()
+
+        df['rsi'] = _rsi(df['close']).fillna(0.0)
+        df['adx'] = _adx(df['high'], df['low'], df['close']).fillna(0.0)
+
+        import joblib
+        model_path = repo_root/'conf'/'model.pkl'
+        if not model_path.exists():
+            raise FileNotFoundError("conf/model.pkl not found; run training workflow first")
+        X = pd.DataFrame({
+            'p_trend': p_base,
+            'macd_hist': macd_diff,
+            'rsi': df['rsi'],
+            'adx': df['adx'],
+            'ofi': df['ofi']
+        }).fillna(0.0)
+        clf = joblib.load(model_path)
+        p_raw = clf.predict_proba(X)[:,1]
         p_trend = p_raw
         if calibrator is not None:
             try:
