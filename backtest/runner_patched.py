@@ -394,17 +394,14 @@ def main():
         macd_hist = df['macd_hist'] if 'macd_hist' in df.columns else np.zeros(len(df))
         ofi = df['ofi'] if 'ofi' in df.columns else np.zeros(len(df))
 
-        X = pd.DataFrame({
-            "vwap_dist": vwap_dist,
-            "vwap_slope": vwap_slope,
-            "ema15_50": ema15_50,
-            "ema50_200": ema50_200,
-            "tbr": tbr,
-            "vol": vol,
-            "rsi": rsi_norm,
-            "adx": adx_norm,
-            "macd_hist": macd_hist,
-            "ofi": ofi
+        # probability baseline from MACD/OFI logit
+        p_base = p_raw.copy()
+        X_full = pd.DataFrame({
+            'p_trend': p_base,
+            'macd_hist': macd_hist,
+            'rsi': rsi_norm * 100.0,
+            'adx': adx_norm * 100.0,
+            'ofi': ofi
         }).fillna(0.0)
 
         from sklearn.linear_model import LogisticRegression
@@ -414,6 +411,8 @@ def main():
         if not os.path.exists(model_path):
             raise FileNotFoundError("LogisticRegression model not found; run backtest_v2_train to create conf/model.pkl")
         clf = joblib.load(model_path)
+        feature_cols = getattr(clf, 'feature_names_in_', ['p_trend','macd_hist','rsi','adx','ofi'])
+        X = X_full[list(feature_cols)]
         p_raw = clf.predict_proba(X)[:, 1]
 
         # --- Enhanced Strategy V2 adjustments ---

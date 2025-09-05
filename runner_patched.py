@@ -194,7 +194,7 @@ def main():
         model_path = repo_root/'conf'/'model.pkl'
         if not model_path.exists():
             raise FileNotFoundError("conf/model.pkl not found; run training workflow first")
-        X = pd.DataFrame({
+        X_full = pd.DataFrame({
             'p_trend': p_base,
             'macd_hist': macd_diff,
             'rsi': df['rsi'],
@@ -202,6 +202,8 @@ def main():
             'ofi': df['ofi']
         }).fillna(0.0)
         clf = joblib.load(model_path)
+        feature_cols = getattr(clf, 'feature_names_in_', X_full.columns)
+        X = X_full[list(feature_cols)]
         p_raw = clf.predict_proba(X)[:,1]
         p_trend = p_raw
         if calibrator is not None:

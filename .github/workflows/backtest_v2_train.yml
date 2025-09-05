@@ -40,7 +40,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: backtest_v2_diag_align
-          path: _out_4u
+          path: .
 
       - name: List artifact files
         run: ls -R _out_4u
