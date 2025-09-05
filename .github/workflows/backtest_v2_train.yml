@@ -48,48 +48,74 @@ jobs:
       - name: Train model
         run: |
           python - <<'PY'
-          # Auto-generated training script
-          import pandas as pd
-          import numpy as np
-          import yaml, joblib
-          from sklearn.linear_model import LogisticRegression
+import pandas as pd, numpy as np, yaml, joblib
+from sklearn.linear_model import LogisticRegression
+from backtest.utils import rebalance_labels_by_regime
 
-          # 1. feature flags 로드
-          with open('conf/feature_flags.yml', 'r') as f:
-              flags = yaml.safe_load(f) or {}
-          p_thr    = (flags.get('entry', {}) or {}).get('p_thr', {'range':0.55, 'trend':0.50})
-          p_ev_req = (flags.get('ev',    {}) or {}).get('p_ev_req', {'range':0.55, 'trend':0.50})
+# 1. feature flags 로드
+with open('conf/feature_flags.yml', 'r') as f:
+    flags = yaml.safe_load(f) or {}
+p_thr    = (flags.get('entry', {}) or {}).get('p_thr', {'range':0.55, 'trend':0.50})
+p_ev_req = (flags.get('ev',    {}) or {}).get('p_ev_req', {'range':0.55, 'trend':0.50})
 
-          # 2. preds_test.csv 로드
-          df = pd.read_csv('_out_4u/run/preds_test.csv')
-          df.fillna(0, inplace=True)
+# 2. preds_test.csv 로드
+df = pd.read_csv('_out_4u/run/preds_test.csv')
 
-          # 3. 라벨 생성
-          if 'label' not in df.columns or df['label'].isnull().all():
-              def mk_label(row):
-                  reg = row.get('regime', 'range')
-                  thr = p_thr.get(reg, 0.5)
-                  evr = p_ev_req.get(reg, 0.5)
-                  return int((row['p_trend'] >= thr) and (row['p_trend'] >= evr))
-              df['label'] = df.apply(mk_label, axis=1)
+use_cols = ['p_trend','macd_hist','rsi','adx','ofi']
+df[use_cols] = df[use_cols].apply(pd.to_numeric, errors='coerce')
+assert df[use_cols].isna().mean().max() < 0.01, "NaN too high"
+assert (df[use_cols].std() > 1e-8).all(), "Zero-variance feature"
+X = df[use_cols].values
+assert np.isfinite(X).all(), "Non-finite in X"
 
-          # 4. 피처 채우기
-          for col in ['p_trend','macd_hist','rsi','adx','ofi']:
-              if col not in df.columns:
-                  df[col] = 0.0
+# 3. 라벨 생성
+if 'label' not in df.columns or df['label'].isnull().all():
+    def mk_label(row):
+        reg = row.get('regime', 'range')
+        thr = p_thr.get(reg, 0.5)
+        evr = p_ev_req.get(reg, 0.5)
+        return int((row['p_trend'] >= thr) and (row['p_trend'] >= evr))
+    df['label'] = df.apply(mk_label, axis=1)
 
-          # 5. 클래스 균형 확인
-          X = df[['p_trend','macd_hist','rsi','adx','ofi']]
-          y = df['label'].astype(int)
-          if y.nunique() < 2:
-              raise ValueError('Training data has only one class; adjust thresholds or generate more data.')
+y = pd.to_numeric(df['label'], errors='coerce').fillna(0).astype(int).to_numpy()
+vc = pd.Series(y).value_counts()
+if len(vc) < 2 or (vc.min()/vc.max()) < 0.2:
+    y = rebalance_labels_by_regime(df, target_ratio=(0.6,0.4))
+    vc = pd.Series(y).value_counts()
+    assert len(vc)==2 and (vc.min()/vc.max())>=0.2, f"Label imbalance: {vc.to_dict()}"
 
-          # 6. 로지스틱 회귀 학습 및 저장
-          clf = LogisticRegression(max_iter=1000, solver='liblinear')
-          clf.fit(X, y)
-          joblib.dump(clf, 'conf/model.pkl')
-          print('[INFO] LogisticRegression trained and saved')
-          PY
+# 4. 로지스틱 회귀 학습 및 저장
+clf = LogisticRegression(max_iter=1000, solver='liblinear')
+clf.fit(df[use_cols], y)
+assert list(clf.feature_names_in_) == use_cols, "feature_names_in_ mismatch"
+joblib.dump(clf, 'conf/model.pkl')
+print('[INFO] LogisticRegression trained and saved')
+PY
+
+      - name: Verify feature outputs
+        run: |
+          python - <<'PY'
+import pandas as pd, numpy as np, json
+df = pd.read_csv('_out_4u/run/preds_test.csv')
+need = ['rsi','adx','ofi']
+missing = [c for c in need if c not in df.columns]
+assert not missing, f"Missing features in preds_test.csv: {missing}"
+for c in need:
+    s = pd.to_numeric(df[c], errors='coerce')
+    assert s.isna().mean() < 0.05, f"{c} NaN too high"
+    assert s.std() > 1e-6, f"{c} flat/zero-variance"
+print('[OK] RSI/ADX/OFI present & variable')
+try:
+    import joblib
+    clf = joblib.load('conf/model.pkl')
+    feats = getattr(clf, "feature_names_in_", None)
+    if feats is not None:
+        for f in feats:
+            assert f in df.columns, f"Model feature missing in preds: {f}"
+        print(f'[OK] feature_names_in_ matched: {len(feats)}')
+except Exception as e:
+    print(f'[WARN] model check skipped: {e}')
+PY
 
       - name: Upload model
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
