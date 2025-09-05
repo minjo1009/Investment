@@ -421,13 +421,11 @@ def main():
 
         # probability baseline from MACD/OFI logit
         p_base = p_raw.copy()
-        X_full = pd.DataFrame({
-            'p_trend': p_base,
-            'macd_hist': macd_hist,
-            'rsi': rsi_norm * 100.0,
-            'adx': adx_norm * 100.0,
-            'ofi': ofi
-        }).fillna(0.0)
+        df['p_trend'] = p_base
+        df['macd_hist'] = macd_hist
+        df['rsi'] = rsi_norm * 100.0
+        df['adx'] = adx_norm * 100.0
+        df['ofi'] = ofi
 
         from sklearn.linear_model import LogisticRegression
         import joblib
@@ -436,8 +434,12 @@ def main():
         if not os.path.exists(model_path):
             raise FileNotFoundError("LogisticRegression model not found; run backtest_v2_train to create conf/model.pkl")
         clf = joblib.load(model_path)
-        feature_cols = getattr(clf, 'feature_names_in_', ['p_trend','macd_hist','rsi','adx','ofi'])
-        X = X_full[list(feature_cols)]
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df.fillna(0, inplace=True)
+        INFER_FEATURES = ['p_trend', 'macd_hist', 'rsi', 'adx', 'ofi']
+        feats = getattr(clf, 'feature_names_in_', None)
+        infer_cols = list(feats) if feats is not None else INFER_FEATURES
+        X = df[infer_cols].values
         p_raw = clf.predict_proba(X)[:, 1]
 
         # --- Enhanced Strategy V2 adjustments ---

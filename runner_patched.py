@@ -6,9 +6,14 @@ import os, sys, json, argparse, csv, math
 from pathlib import Path
 import yaml, pandas as pd, numpy as np
 from backtest.utils.dedupe import safe_load_no_dupe
-from backtest.strategy_v2 import (passes_conviction, ConvictionParams, ConvictionState,
-
-                                  RollingBalance, RollingBalanceParams, approx_ofi, Frictions)
+from backtest.strategy_v2 import (
+    passes_conviction,
+    ConvictionParams,
+    ConvictionState,
+    RollingBalance,
+    RollingBalanceParams,
+    Frictions,
+)
 
 # --- PATCH: timestamp auto-normalization (injected) ---------------------------
 try:
@@ -141,14 +146,27 @@ def main():
     dir_hint = np.sign(macd_diff).astype(int)
 
     # Features
-    ofi_list, tr_list = [], []
+    tr_list = []
     prev_close = float(df['close'].iloc[0])
-    for h,l,c,o,v in zip(df['high'],df['low'],df['close'],df['open'],df['volume']):
+    for h, l, c in zip(df['high'], df['low'], df['close']):
         rb.update(float(h), float(l), float(prev_close))
-        tr_list.append(true_range(float(h),float(l),float(prev_close)))
-        ofi_list.append(approx_ofi(float(o),float(h),float(l),float(c),float(v)))
+        tr_list.append(true_range(float(h), float(l), float(prev_close)))
         prev_close = float(c)
-    df['ofi'] = ofi_list; df['tr'] = tr_list
+    df['tr'] = tr_list
+
+    # OFI (guarded)
+    df = df.sort_index()
+    C = pd.to_numeric(df['close'], errors='coerce')
+    O = pd.to_numeric(df['open'],  errors='coerce')
+    H = pd.to_numeric(df['high'],  errors='coerce')
+    L = pd.to_numeric(df['low'],   errors='coerce')
+    V = pd.to_numeric(df['volume'], errors='coerce').replace(0, np.nan)
+    eps = 1e-12
+    denom = np.maximum(H - L, eps)
+    ofi = ((C - O) / denom) * V
+    ofi = ofi.fillna(0.0)
+    assert ofi.std() > 1e-6, "OFI flat (check sorting/denom/volume)"
+    df['ofi'] = ofi
 
     # Persistence
     m = gate.m
@@ -168,43 +186,53 @@ def main():
 
         # extra features for logistic model
         def _rsi(close, n=14):
+            close = pd.to_numeric(close, errors='coerce').sort_index()
+            assert close.isna().mean() < 0.01, "RSI: close NaN too high"
             delta = close.diff()
-            up = delta.clip(lower=0).ewm(alpha=1/n, adjust=False).mean()
-            down = (-delta.clip(upper=0)).ewm(alpha=1/n, adjust=False).mean()
-            rs = up / (down + 1e-9)
-            return 100 - (100 / (1 + rs))
+            ema_up = delta.clip(lower=0).ewm(alpha=1/n, adjust=False).mean()
+            ema_down = (-delta.clip(upper=0)).ewm(alpha=1/n, adjust=False).mean()
+            rsi = ema_up / np.maximum(ema_up + ema_down, 1e-12) * 100
+            rsi = rsi.fillna(method='bfill').fillna(0.0)
+            assert rsi.std() > 1e-6, "RSI flat (input/params broken)"
+            return rsi
 
         def _adx(high, low, close, n=14):
-            plus_dm = high.diff().clip(lower=0)
-            minus_dm = (-low.diff()).clip(lower=0)
+            up, down = high.diff(), -low.diff()
+            dm_p = np.where((up > down) & (up > 0), up, 0.0)
+            dm_m = np.where((down > up) & (down > 0), down, 0.0)
             tr1 = high - low
             tr2 = (high - close.shift()).abs()
             tr3 = (low - close.shift()).abs()
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            atr = tr.ewm(alpha=1/n, adjust=False).mean()
-            plus_di = 100 * plus_dm.ewm(alpha=1/n, adjust=False).mean() / (atr + 1e-9)
-            minus_di = 100 * minus_dm.ewm(alpha=1/n, adjust=False).mean() / (atr + 1e-9)
-            dx = ((plus_di - minus_di).abs() / (plus_di + minus_di + 1e-9)) * 100
-            return dx.ewm(alpha=1/n, adjust=False).mean()
+            tr_s = tr.ewm(alpha=1/n, adjust=False).mean()
+            dmps = pd.Series(dm_p).ewm(alpha=1/n, adjust=False).mean()
+            dmms = pd.Series(dm_m).ewm(alpha=1/n, adjust=False).mean()
+            eps = 1e-12
+            dip = 100 * dmps / np.maximum(tr_s, eps)
+            dim = 100 * dmms / np.maximum(tr_s, eps)
+            dx = 100 * (np.abs(dip - dim) / np.maximum(dip + dim, eps))
+            adx = dx.ewm(alpha=1/n, adjust=False).mean()
+            assert adx.std() > 1e-6, "ADX flat (check Wilder/eps)"
+            return adx.fillna(0.0)
 
-        df['rsi'] = _rsi(df['close']).fillna(0.0)
-        df['adx'] = _adx(df['high'], df['low'], df['close']).fillna(0.0)
+        df['rsi'] = _rsi(df['close'])
+        df['adx'] = _adx(df['high'], df['low'], df['close'])
 
         import joblib
-        model_path = repo_root/'conf'/'model.pkl'
+        model_path = repo_root / 'conf' / 'model.pkl'
         if not model_path.exists():
             raise FileNotFoundError("conf/model.pkl not found; run training workflow first")
-        X_full = pd.DataFrame({
-            'p_trend': p_base,
-            'macd_hist': macd_diff,
-            'rsi': df['rsi'],
-            'adx': df['adx'],
-            'ofi': df['ofi']
-        }).fillna(0.0)
         clf = joblib.load(model_path)
-        feature_cols = getattr(clf, 'feature_names_in_', X_full.columns)
-        X = X_full[list(feature_cols)]
-        p_raw = clf.predict_proba(X)[:,1]
+
+        df['p_trend'] = p_base
+        df['macd_hist'] = macd_diff
+        df.replace([np.inf, -np.inf], np.nan, inplace=True)
+        df.fillna(0, inplace=True)
+        INFER_FEATURES = ['p_trend', 'macd_hist', 'rsi', 'adx', 'ofi']
+        feats = getattr(clf, 'feature_names_in_', None)
+        infer_cols = list(feats) if feats is not None else INFER_FEATURES
+        X = df[infer_cols].values
+        p_raw = clf.predict_proba(X)[:, 1]
         p_trend = p_raw
         if calibrator is not None:
             try:

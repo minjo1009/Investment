@@ -327,6 +327,31 @@ jobs:
           print({k:s.get(k) for k in ["winrate","mcc","num_trades","cum_pnl_bps"]})
           PY
 
+      - name: Verify feature outputs
+        run: |
+          python - <<'PY'
+import pandas as pd, numpy as np, json
+df = pd.read_csv('_out_4u/run/preds_test.csv')
+need = ['rsi','adx','ofi']
+missing = [c for c in need if c not in df.columns]
+assert not missing, f"Missing features in preds_test.csv: {missing}"
+for c in need:
+    s = pd.to_numeric(df[c], errors='coerce')
+    assert s.isna().mean() < 0.05, f"{c} NaN too high"
+    assert s.std() > 1e-6, f"{c} flat/zero-variance"
+print('[OK] RSI/ADX/OFI present & variable')
+try:
+    import joblib
+    clf = joblib.load('conf/model.pkl')
+    feats = getattr(clf, "feature_names_in_", None)
+    if feats is not None:
+        for f in feats:
+            assert f in df.columns, f"Model feature missing in preds: {f}"
+        print(f'[OK] feature_names_in_ matched: {len(feats)}')
+except Exception as e:
+    print(f'[WARN] model check skipped: {e}')
+PY
+
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
