@@ -17,9 +17,10 @@ def _make_dummy(tmp: Path) -> Path:
   rows = []
   for i in range(n):
     open_ = price
-    high = open_ + (0.1 if i < 60 else 0.5)
-    low = open_
-    close = high
+    delta = 0.2 if (i % 2 == 0) else -0.1
+    close = open_ + delta
+    high = max(open_, close) + 0.1
+    low = min(open_, close) - 0.1
     rows.append({
       'timestamp': ts[i],
       'open': open_,

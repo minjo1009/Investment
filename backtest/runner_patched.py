@@ -18,6 +18,7 @@ from trend4u.calib.quantile_map import QuantileMap
 from trend4u.calib import drift as drift
 
 from backtest.strategy_v2 import Frictions, ofi_conf_alignment, soft_gate_adjustments  # keep single import to avoid circulars
+from backtest.utils import rebalance_labels_by_regime
 from backtest.strategy_v2.indicators import wavelet_denoise_safe
 from backtest.strategy_v2.divergence import macd_divergence
 from backtest.strategy_v2.sizing import conviction_scaled_size
@@ -180,11 +181,12 @@ def main():
             ts = pd.date_range('2020-01-01', periods=n_gen, freq='1min', tz='UTC')
             price = 100.0
             rows = []
-            for t in ts:
+            for i, t in enumerate(ts):
                 open_ = price
-                high = open_ + 0.5
-                low = open_
-                close = high
+                delta = 0.2 if (i % 2 == 0) else -0.1
+                close = open_ + delta
+                high = max(open_, close) + 0.1
+                low = min(open_, close) - 0.1
                 rows.append({'timestamp': t, 'open': open_, 'high': high, 'low': low, 'close': close, 'volume': 1.0})
                 price = close
             df = pd.DataFrame(rows)
@@ -206,6 +208,19 @@ def main():
     C = df['close'].astype(float).to_numpy()
     V = df['volume'].astype(float).to_numpy()
     n = len(df)
+
+    # ----- RSI (guarded) -----
+    rsi_n = 14
+    close_series = pd.to_numeric(df["close"], errors="coerce")
+    close_series = close_series.sort_index()
+    assert close_series.isna().mean() < 0.01, "RSI: close NaN too high"
+    delta = close_series.diff()
+    ema_up = delta.clip(lower=0).ewm(alpha=1 / rsi_n, adjust=False).mean()
+    ema_down = (-delta.clip(upper=0)).ewm(alpha=1 / rsi_n, adjust=False).mean()
+    rsi = ema_up / np.maximum(ema_up + ema_down, 1e-12) * 100
+    rsi = rsi.fillna(method="bfill").fillna(0.0)
+    assert rsi.std() > 1e-6, "RSI is flat (input/params broken)"
+    df["rsi"] = rsi.to_numpy()
 
     if (params.get("signal", {}) or {}).get("denoise") == "wavelet_l1":
         try:
@@ -241,10 +256,18 @@ def main():
         div=None; block_long=None; block_short=None; df["divergence"] = "none"
 
     # ---------- OFI (vector) ----------
-    eps = 1e-9
-    span = (H - L) + eps
-    ofi = ((C - O) / span) * V
-    df['ofi'] = ofi
+    df = df.sort_index()
+    C_s = pd.to_numeric(df["close"], errors="coerce")
+    O_s = pd.to_numeric(df["open"], errors="coerce")
+    H_s = pd.to_numeric(df["high"], errors="coerce")
+    L_s = pd.to_numeric(df["low"], errors="coerce")
+    V_s = pd.to_numeric(df["volume"], errors="coerce").replace(0, np.nan)
+    eps = 1e-12
+    denom = np.maximum(H_s - L_s, eps)
+    ofi = ((C_s - O_s) / denom) * V_s
+    ofi = ofi.fillna(0.0)
+    assert ofi.std() > 1e-6, "OFI flat (check sorting/denom/volume)"
+    df['ofi'] = ofi.to_numpy()
 
     # ---------- TR / in_box (vector) ----------
     pc = np.r_[C[0], C[:-1]]  # previous close
@@ -271,18 +294,20 @@ def main():
     adx_n = int(adx_cfg.get('n', 14))
     adx_thr = float(adx_cfg.get('thr', 22.0))
     adx_persist = int(adx_cfg.get('min_persist', 10))
-    up_move = H[1:] - H[:-1]
-    down_move = L[:-1] - L[1:]
-    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
-    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
-    tr1 = tr[1:]
-    tr_s = pd.Series(tr1).ewm(alpha=1/adx_n, adjust=False).mean()
-    plus_di = 100 * pd.Series(plus_dm).ewm(alpha=1/adx_n, adjust=False).mean() / tr_s
-    minus_di = 100 * pd.Series(minus_dm).ewm(alpha=1/adx_n, adjust=False).mean() / tr_s
-    dx = (np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-9)) * 100
-    adx = pd.Series(dx).ewm(alpha=1/adx_n, adjust=False).mean().fillna(0.0).to_numpy()
-    adx = np.r_[0.0, adx]  # align length
-    df['adx'] = adx
+    up, down = pd.Series(H).diff(), -pd.Series(L).diff()
+    dm_p = np.where((up > down) & (up > 0), up, 0.0)
+    dm_m = np.where((down > up) & (down > 0), down, 0.0)
+    tr_s = pd.Series(tr).ewm(alpha=1 / adx_n, adjust=False).mean()
+    dmps = pd.Series(dm_p).ewm(alpha=1 / adx_n, adjust=False).mean()
+    dmms = pd.Series(dm_m).ewm(alpha=1 / adx_n, adjust=False).mean()
+    eps = 1e-12
+    dip = 100 * dmps / np.maximum(tr_s, eps)
+    dim = 100 * dmms / np.maximum(tr_s, eps)
+    dx = 100 * (np.abs(dip - dim) / np.maximum(dip + dim, eps))
+    adx = dx.ewm(alpha=1 / adx_n, adjust=False).mean()
+    adx = adx.fillna(0.0)
+    assert adx.std() > 1e-6, "ADX is flat (check Wilder rules / eps guards)"
+    df['adx'] = adx.to_numpy()
 
     trend_raw = (z >= z_trend_min) & (adx >= adx_thr)
     trend_persist = pd.Series(trend_raw.astype(int)).rolling(adx_persist, min_periods=1).sum().to_numpy()
@@ -826,7 +851,12 @@ def main():
     # preds (optional)
     if not args.no_preds:
         # label based on price change; note: training workflow will regenerate labels using thresholds
-        label = (pd.Series(C).shift(-1) > pd.Series(C)).astype(float).fillna(0.0).to_numpy()
+        label = (pd.Series(C).shift(-1) > pd.Series(C)).astype(int).fillna(0).to_numpy()
+        vc = pd.Series(label).value_counts()
+        if len(vc) < 2 or (vc.min() / vc.max()) < 0.2:
+            label = rebalance_labels_by_regime(df, target_ratio=(0.6, 0.4))
+            vc = pd.Series(label).value_counts()
+            assert len(vc) == 2 and (vc.min() / vc.max()) >= 0.2, f"Label imbalance: {vc.to_dict()}"
         audit = pd.DataFrame({
             tcol: df[tcol],
             "p_trend": p_trend,
