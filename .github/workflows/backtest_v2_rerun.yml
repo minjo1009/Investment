@@ -33,12 +33,47 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: backtest_v2_diag_align
-          path: .
+          path: artifact.zip
+      - name: Extract artifacts to repo root
+        run: |
+          mkdir -p _out_4u
+          bsdtar -x -f artifact.zip -C .
+          find _out_4u -maxdepth 2 -type f | sed -n '1,20p'
       - name: Download model
         uses: actions/download-artifact@v4
         with:
           name: trained-model
-          path: conf
+          path: model.zip
+      - name: Extract model artifact
+        run: |
+          bsdtar -x -f model.zip -C .
+          ls -l conf/model.pkl
+          sed -E 's/^[[:space:]]{10}//' <<'PY' | python -
+import joblib
+clf=joblib.load('conf/model.pkl')
+print("LOADED:", hasattr(clf,'coef_'))
+PY
+      - name: Ensure fallback code removed
+        run: |
+          if grep -R "fallback to 0.5" -n backtest; then
+            echo "ERROR: fallback code remains"; exit 1; fi
+      - name: Model and feature smoke test
+        run: |
+          sed -E 's/^[[:space:]]{10}//' <<'PY' | python -
+import joblib, pandas as pd, numpy as np
+from sklearn.utils.validation import check_is_fitted
+clf=joblib.load('conf/model.pkl')
+check_is_fitted(clf)
+print("[OK] fitted model")
+df=pd.read_csv('_out_4u/run/preds_test.csv')
+feats=getattr(clf,'feature_names_in_',None)
+if feats:
+    miss=[f for f in feats if f not in df.columns]
+    assert not miss, f"Missing features in preds: {miss}"
+    X=df[feats].apply(pd.to_numeric,errors='coerce').fillna(0).values
+    assert np.isfinite(X).all()
+print("[OK] feature match")
+PY
       - name: Re-run backtest
         run: |
           set -e
